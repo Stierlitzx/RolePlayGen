@@ -1,0 +1,37 @@
+STORY PARAMETERS
+Title: {title}
+Setting: {setting}
+World: {setting_description}
+Additional details from the player: {custom_details}
+Genres: {genres}
+Tone: {tone}
+Hero role: {hero_role}
+Hero name: {hero_name}
+Story language: {language}
+Setting culture: {setting_culture}
+Character naming culture: {naming_culture}
+Content restrictions: {content_restrictions}
+Length: {length}
+Current turn: {turn_number}
+Maximum turns: {max_turns}
+{position_hint}
+{intro_hint}
+
+KNOWN CHARACTERS (keep them consistent; update via the characters field)
+{known_characters}
+
+REMEMBERED FACTS (never contradict these)
+{facts}
+
+OLDER STORY SUMMARY
+{summary}
+
+RECURRING CHARACTERS AND RELATIONSHIPS ARE PART OF THE FACTS — keep their names, personalities and voices consistent.
+
+RECENT TURNS
+{recent_turns}
+
+PLAYER INPUT
+{player_input}
+
+Write the next turn (350-700 words, 4-8 paragraphs, with dialogue). Return only the JSON object.

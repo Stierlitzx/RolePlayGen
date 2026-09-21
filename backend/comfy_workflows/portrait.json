@@ -1,0 +1,140 @@
+{
+  "4": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "waiIllustriousSDXL_v170.safetensors"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "masterpiece, best quality, amazing quality, general, 1girl, solo, adult, medium breasts, sky pirate captain, red long coat, tricorn hat, brown hair, green eyes, smile, hand on hip, airship deck, sunset clouds, vibrant colors, cowboy shot, looking at viewer",
+      "clip": [
+        "15",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "bad quality, worst quality, worst detail, sketch, censor, nsfw, watermark, signature, text, huge breasts",
+      "clip": [
+        "15",
+        1
+      ]
+    }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 1024,
+      "height": 1344,
+      "batch_size": 1
+    }
+  },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 123456789,
+      "steps": 28,
+      "cfg": 6,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 1,
+      "model": [
+        "15",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+      0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
+    }
+  },
+  "12": {
+    "class_type": "LatentUpscaleBy",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "upscale_method": "bislerp",
+      "scale_by": 1.25
+    }
+  },
+  "13": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 123456789,
+      "steps": 25,
+      "cfg": 6,
+      "sampler_name": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 0.45,
+      "model": [
+        "15",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "12",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "13",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
+    }
+  },
+  "9": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "detailer_portrait",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  },
+  "15": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ],
+      "clip": [
+        "4",
+        1
+      ],
+      "lora_name": "NOOB_vp1_detailer_by_volnovik_v1.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8
+    }
+  }
+}
