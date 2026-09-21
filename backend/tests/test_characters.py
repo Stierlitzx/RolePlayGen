@@ -136,10 +136,15 @@ def test_scene_appearance_tags_splicing(db_session: Session) -> None:
 
 
 def test_portrait_prompt_sanitized_and_framed() -> None:
-    prompt = image_service.assemble_portrait_prompt("1girl, nsfw, green eyes, masterpiece, scar")
+    prompt = image_service.assemble_portrait_prompt(
+        "1girl, nsfw, green eyes, masterpiece, scar",
+        pose="arms crossed",
+        expression="sardonic grin",
+    )
     assert "nsfw" not in prompt
     assert "green eyes" in prompt and "adult" in prompt
-    assert prompt.endswith("portrait, close-up, looking at viewer, simple background")
+    assert "arms crossed" in prompt and "sardonic grin" in prompt
+    assert prompt.endswith("full body, standing, looking at viewer, simple background")
 
 
 def test_relationship_update_does_not_overwrite_appearance(

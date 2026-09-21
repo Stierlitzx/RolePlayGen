@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type ImageFormat, type ImageStatus, type Turn } from '../api';
+import ZoomableImage from './Lightbox';
 
 interface Props {
   turn: Turn;
@@ -76,9 +77,7 @@ export default function ImageBlock({ turn }: Props) {
   if (status === 'done' && url) {
     return (
       <div className={`image-block image-done image-${format}`}>
-        <a href={url} target="_blank" rel="noreferrer">
-          <img src={url} alt="Scene illustration" style={{ aspectRatio: ASPECT[format] }} />
-        </a>
+        <ZoomableImage src={url} alt="Scene illustration" style={{ aspectRatio: ASPECT[format] }} />
       </div>
     );
   }

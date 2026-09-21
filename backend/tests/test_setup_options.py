@@ -56,11 +56,19 @@ def test_resolve_randoms_picks_concrete_presets() -> None:
 
 
 def test_max_genres_matches_schema() -> None:
+    import pytest
     from app.schemas import StoryCreate
 
-    assert MAX_GENRES == 3
-    # three genres accepted
+    assert MAX_GENRES == 5
+    # five genres accepted
     StoryCreate(
-        setting="Modern city", genres=["Drama", "Comedy", "Romance"],
+        setting="Modern city", genres=["Drama", "Comedy", "Romance", "Action", "Mystery"],
         tone="Light", length="short", language="English",
     )
+    # six genres rejected
+    with pytest.raises(ValueError):
+        StoryCreate(
+            setting="Modern city",
+            genres=["Drama", "Comedy", "Romance", "Action", "Mystery", "Horror"],
+            tone="Light", length="short", language="English",
+        )

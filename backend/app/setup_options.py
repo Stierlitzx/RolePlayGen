@@ -8,7 +8,7 @@ import random
 from typing import Any
 
 # How many genres the player may combine in one story.
-MAX_GENRES = 3
+MAX_GENRES = 5
 
 SETTING_OPTIONS = [
     "Medieval kingdom",
@@ -96,6 +96,76 @@ LENGTH_OPTIONS = [
 
 LANGUAGE_OPTIONS = ["Russian", "English", "Kazakh"]
 
+# PEGI-like age ratings. The rating gates both the narration and the images.
+AGE_RATING_OPTIONS = ["3+", "7+", "12+", "16+", "18+"]
+DEFAULT_AGE_RATING = "12+"
+ADULT_RATING = "18+"
+
+# Extra genres unlocked only for 18+ stories.
+ADULT_GENRE_OPTIONS = ["Hentai", "Erotica", "Slasher / gore", "Extreme horror"]
+
+# Art style presets for the image pipeline. Each maps to positive tags
+# appended to every image prompt of the story and optional negative tags
+# appended to the workflow's negative prompt (node 7).
+IMAGE_STYLE_TAGS = {
+    "Anime (default)": {
+        "positive": "anime style, anime coloring",
+        "negative": "realistic, photorealistic",
+    },
+    "Semi-realistic": {
+        "positive": "semi-realistic, painterly",
+        "negative": "",
+    },
+    "Cinematic realistic": {
+        "positive": "realistic, cinematic lighting, film still",
+        "negative": "anime, cartoon",
+    },
+    "Comic book": {
+        "positive": "comic book art, bold outlines, flat colors",
+        "negative": "photorealistic",
+    },
+    "Watercolor storybook": {
+        "positive": "watercolor painting, storybook illustration, soft colors",
+        "negative": "photorealistic",
+    },
+}
+IMAGE_STYLE_OPTIONS = list(IMAGE_STYLE_TAGS)
+DEFAULT_IMAGE_STYLE = IMAGE_STYLE_OPTIONS[0]
+
+# Narrator voice presets. The fragment is appended to the narrator system
+# prompt for every turn of the story. "Classic" adds nothing — exactly the
+# behavior stories had before this feature existed.
+NARRATOR_STYLE_FRAGMENTS = {
+    "Classic narrator": "",
+    "Noir": (
+        "NARRATOR STYLE: hard-boiled noir. Cynical, terse, metaphor-rich prose; "
+        "rain, smoke and moral decay; the narrator judges everyone quietly."
+    ),
+    "Epic saga": (
+        "NARRATOR STYLE: elevated epic-saga voice. Grand, mythic phrasing; "
+        "events feel like verses of a legend being sung around a fire."
+    ),
+    "Light and witty": (
+        "NARRATOR STYLE: playful and ironic. Dry humor, gentle mockery of genre "
+        "tropes, warm sarcasm — without ever breaking the fourth wall or the stakes."
+    ),
+    "Gothic dread": (
+        "NARRATOR STYLE: gothic slow-burn. Dense atmosphere, decay, whispers and "
+        "dread building under ordinary scenes; beautiful but unsettling prose."
+    ),
+    "Disco Elysium": (
+        "NARRATOR STYLE: Disco Elysium. Second person, present tense. The hero's "
+        "fractured psyche speaks in capitalized skill-voices that interrupt the "
+        "narration with their own lines, e.g. ELECTROCHEMISTRY: …, LOGIC: …, "
+        "INLAND EMPIRE: … Let objects, places and memories talk. Surreal, "
+        "self-deprecating, unexpectedly profound. Weave 1-3 skill-voice "
+        "interjections into most turns, formatted as their own paragraphs."
+    ),
+}
+NARRATOR_STYLE_OPTIONS = list(NARRATOR_STYLE_FRAGMENTS)
+DEFAULT_NARRATOR_STYLE = NARRATOR_STYLE_OPTIONS[0]
+
+
 # "Match story language" is the neutral default: culture follows the language,
 # exactly how stories behaved before this field existed.
 CULTURE_OPTIONS = [
@@ -167,4 +237,69 @@ def resolve_randoms(data: dict[str, Any]) -> dict[str, Any]:
     if resolved.get("tone") == "Random":
         resolved["tone"] = random.choice([t for t in TONE_OPTIONS if t != "Random"])
     return resolved
+
+
+def narrator_style_fragment(narrator_style: str | None) -> str:
+    """Prompt fragment for the chosen narrator voice; empty for classic/unset."""
+    if not narrator_style:
+        return ""
+    return NARRATOR_STYLE_FRAGMENTS.get(narrator_style, "")
+
+
+_RATING_CLAUSES = {
+    "3+": "wholesome, all-ages content: no violence beyond cartoonish, no romance beyond innocent, no swearing, scary moments stay mild",
+    "7+": "family-friendly content: mild fantasy violence, no swearing, no sexual content, frightening moments stay brief and safe",
+    "12+": "teen content: action violence without gore, romance without sexual content, mild language only",
+    "16+": "mature content: realistic violence without lingering gore, sexual references and fade-to-black at most, stronger language allowed",
+    "18+": "adult content: unrestricted adult themes, strong language and dark subject matter allowed",
+}
+
+
+def age_rating_clause(params: dict[str, Any]) -> str:
+    """AGE RATING prompt section, or an empty string for stories created before
+    ratings existed (their voice must not change retroactively)."""
+    rating = params.get("age_rating")
+    if not rating:
+        return ""
+    clause = _RATING_CLAUSES.get(str(rating))
+    if clause is None:
+        return ""
+    lines = [
+        f"AGE RATING: This story is rated {rating} — keep every turn within {clause}.",
+    ]
+    if rating == ADULT_RATING:
+        explicit = bool(params.get("explicit_sexual"))
+        gore = bool(params.get("graphic_violence"))
+        if explicit:
+            lines.append(
+                "The player explicitly opted into explicit sexual content: it is permitted "
+                "and expected when the story calls for it."
+            )
+        else:
+            lines.append("No explicit sexual detail — keep intimacy non-graphic.")
+        if gore:
+            lines.append(
+                "The player explicitly opted into graphic violence: gore and brutality "
+                "may be depicted in detail when the story calls for it."
+            )
+        else:
+            lines.append("No graphic gore — violence stays non-gratuitous.")
+    lines.append(
+        "Absolute rules at every rating: every character in sexual or romantic content is an adult; "
+        "the player's content restrictions override everything; the rating sets the content ceiling, "
+        "not the prose quality."
+    )
+    return "\n".join(lines)
+
+
+def image_style_tags(image_style: str | None) -> dict[str, str]:
+    """Positive/negative style tags for the story's images; empty when unset."""
+    if not image_style:
+        return {"positive": "", "negative": ""}
+    return IMAGE_STYLE_TAGS.get(image_style, {"positive": "", "negative": ""})
+
+
+def images_are_explicit(params: dict[str, Any]) -> bool:
+    """Only an 18+ story with the explicit-sexual flag gets explicit-rated images."""
+    return params.get("age_rating") == ADULT_RATING and bool(params.get("explicit_sexual"))
 

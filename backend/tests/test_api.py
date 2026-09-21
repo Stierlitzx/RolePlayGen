@@ -103,7 +103,17 @@ def test_update_and_regenerate_start_via_api(client: TestClient) -> None:
 
     turn = client.post(f"/api/stories/{story['id']}/turns", json={"option_id": "a"})
     assert turn.status_code == 201
+    new_payload["tone"] = "Epic"  # any non-style change is frozen mid-story
     blocked = client.patch(f"/api/stories/{story['id']}", json=new_payload)
     assert blocked.status_code == 400
     blocked_regen = client.post(f"/api/stories/{story['id']}/regenerate-start")
     assert blocked_regen.status_code == 400
+
+    # the narrator voice is the one thing that may change mid-story
+    current = client.get(f"/api/stories/{story['id']}").json()
+    style_only = dict(current["settings"])
+    style_only["narrator_style"] = "Noir"
+    restyled = client.patch(f"/api/stories/{story['id']}", json=style_only)
+    assert restyled.status_code == 200
+    assert restyled.json()["settings"]["narrator_style"] == "Noir"
+    assert restyled.json()["settings"]["hero_name"] == "Raya"  # everything else untouched

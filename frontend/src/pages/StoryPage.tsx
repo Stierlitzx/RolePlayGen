@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type CharacterInfo, type Story, type TurnCreate } from '../api';
+import { api, type CharacterInfo, type Story, type StoryCreate, type TurnCreate } from '../api';
 import CharactersPanel from '../components/CharactersPanel';
 import ChoicePanel from '../components/ChoicePanel';
 import ErrorBanner from '../components/ErrorBanner';
@@ -21,6 +21,8 @@ export default function StoryPage({ storyId, onHome, onNewStory, onEditStory }: 
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'story' | 'characters'>('story');
   const [characters, setCharacters] = useState<CharacterInfo[]>([]);
+  const [narratorStyles, setNarratorStyles] = useState<string[]>([]);
+  const [styleSaving, setStyleSaving] = useState(false);
   const feedEndRef = useRef<HTMLDivElement | null>(null);
   const lastTurnTextRef = useRef<HTMLElement | null>(null);
 
@@ -64,6 +66,34 @@ export default function StoryPage({ storyId, onHome, onNewStory, onEditStory }: 
   const updateCharacter = useCallback((updated: CharacterInfo) => {
     setCharacters((list) => list.map((c) => (c.id === updated.id ? updated : c)));
   }, []);
+
+  useEffect(() => {
+    api
+      .setupOptions()
+      .then((value) => setNarratorStyles(value.narrator_styles))
+      .catch(() => {
+        /* the style picker simply stays hidden without the options */
+      });
+  }, []);
+
+  // The narrator voice may change at any point; every other setup field is
+  // frozen once the second turn exists (the backend enforces this too).
+  const changeNarratorStyle = useCallback(
+    async (value: string) => {
+      if (!story || styleSaving) return;
+      setStyleSaving(true);
+      setError(null);
+      try {
+        const payload = { ...story.settings, narrator_style: value } as unknown as StoryCreate;
+        setStory(await api.updateStory(story.id, payload));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not change the narrator style.');
+      } finally {
+        setStyleSaving(false);
+      }
+    },
+    [story, styleSaving],
+  );
 
   useEffect(() => {
     // Scroll to the new turn's text; image placeholders reserve their height
@@ -133,6 +163,18 @@ export default function StoryPage({ storyId, onHome, onNewStory, onEditStory }: 
             Turn {story.turns.length}{story.max_turns ? ` of ${story.max_turns}` : ''}
           </p>
         </div>
+        {narratorStyles.length > 0 && (
+          <label className="narrator-style-picker">
+            Narrator
+            <select
+              value={String(story.settings.narrator_style ?? 'Classic narrator')}
+              disabled={styleSaving}
+              onChange={(event) => void changeNarratorStyle(event.target.value)}
+            >
+              {narratorStyles.map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+        )}
         <div className="card-actions">
           {canChangeStart && (
             <>

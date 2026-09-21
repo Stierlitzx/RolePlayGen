@@ -1,4 +1,5 @@
 import { api, type CharacterInfo } from '../api';
+import ZoomableImage from './Lightbox';
 
 interface Props {
   /** Characters whose first_seen_turn_id matches this turn. */
@@ -31,9 +32,7 @@ export default function IntroducedCharacters({ characters, onUpdated }: Props) {
       {characters.map((character) => (
         <figure key={character.id} className="introduced-card">
           {character.portrait_status === 'done' && character.portrait_url ? (
-            <a href={character.portrait_url} target="_blank" rel="noreferrer">
-              <img src={character.portrait_url} alt={`Portrait of ${character.name}`} />
-            </a>
+            <ZoomableImage src={character.portrait_url} alt={`Portrait of ${character.name}`} />
           ) : character.portrait_status === 'queued' || character.portrait_status === 'generating' ? (
             <div className="portrait-placeholder image-loading" style={{ aspectRatio: PORTRAIT_ASPECT }}>
               <span className="spinner" aria-hidden="true" />

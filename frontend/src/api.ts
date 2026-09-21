@@ -71,6 +71,13 @@ export interface SetupOptions {
   languages: Language[];
   cultures: string[];
   max_genres: number;
+  age_ratings: string[];
+  adult_genres: string[];
+  image_styles: string[];
+  narrator_styles: string[];
+  default_age_rating: string;
+  default_image_style: string;
+  default_narrator_style: string;
   models: string[];
   default_model: string;
   ai_configured: boolean;
@@ -84,6 +91,7 @@ export interface StoryCreate {
   tone: string;
   hero_role: string | null;
   hero_name: string | null;
+  hero_appearance: string | null;
   length: Length;
   custom_turns: number | null;
   model: string | null;
@@ -93,6 +101,11 @@ export interface StoryCreate {
   setting_culture: string | null;
   naming_culture: string | null;
   intro_exposition: boolean;
+  age_rating: string | null;
+  explicit_sexual: boolean;
+  graphic_violence: boolean;
+  image_style: string | null;
+  narrator_style: string | null;
 }
 
 export interface CharacterInfo {

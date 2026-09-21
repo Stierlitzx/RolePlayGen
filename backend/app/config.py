@@ -6,6 +6,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     gemini_api_key: str = ""
     model_name: str = "gemini-3.5-flash"
+    # Text model provider: "gemini" (default, cloud) or "openai" — any
+    # OpenAI-compatible server (Ollama, LM Studio, llama.cpp). Local servers
+    # can run uncensored fine-tunes and need no real API key.
+    llm_provider: str = "gemini"
+    openai_base_url: str = "http://localhost:11434/v1"
+    openai_api_key: str = "ollama"
+    openai_model: str = "llama3.1:8b"
     database_url: str = "sqlite:///./story.db"
     max_tokens: int = 4000
     mock_llm: bool = False

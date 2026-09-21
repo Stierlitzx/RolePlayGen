@@ -7,6 +7,7 @@ Genres: {genres}
 Tone: {tone}
 Hero role: {hero_role}
 Hero name: {hero_name}
+Hero appearance: {hero_appearance}
 Story language: {language}
 Setting culture: {setting_culture}
 Character naming culture: {naming_culture}

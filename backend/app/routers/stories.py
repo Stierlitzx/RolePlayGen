@@ -1,3 +1,7 @@
+import logging
+import shutil
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.orm import Session
 
@@ -7,15 +11,24 @@ from ..models import Story
 from ..schemas import SetupOptions, StoryCreate, StoryRead, StorySummary, StoryUpdate, TurnCreate, TurnRead
 from ..services import story_engine
 from ..setup_options import (
+    ADULT_GENRE_OPTIONS,
+    AGE_RATING_OPTIONS,
     CULTURE_OPTIONS,
+    DEFAULT_AGE_RATING,
+    DEFAULT_IMAGE_STYLE,
+    DEFAULT_NARRATOR_STYLE,
     GENRE_OPTIONS,
+    IMAGE_STYLE_OPTIONS,
     LANGUAGE_OPTIONS,
     LENGTH_OPTIONS,
     MAX_GENRES,
     MODEL_OPTIONS,
+    NARRATOR_STYLE_OPTIONS,
     SETTING_OPTIONS,
     TONE_OPTIONS,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["stories"])
 
@@ -27,6 +40,9 @@ def health() -> dict[str, str]:
 
 @router.get("/setup-options", response_model=SetupOptions)
 def setup_options(settings: Settings = Depends(get_settings)) -> SetupOptions:
+    # With a local OpenAI-compatible provider the Gemini model list is
+    # meaningless: offer exactly the configured local model instead.
+    is_gemini = (settings.llm_provider or "gemini") == "gemini"
     return SetupOptions(
         settings=SETTING_OPTIONS,
         genres=GENRE_OPTIONS,
@@ -35,9 +51,16 @@ def setup_options(settings: Settings = Depends(get_settings)) -> SetupOptions:
         languages=LANGUAGE_OPTIONS,
         cultures=CULTURE_OPTIONS,
         max_genres=MAX_GENRES,
-        models=MODEL_OPTIONS,
-        default_model=settings.model_name,
-        ai_configured=bool(settings.gemini_api_key),
+        age_ratings=AGE_RATING_OPTIONS,
+        adult_genres=ADULT_GENRE_OPTIONS,
+        image_styles=IMAGE_STYLE_OPTIONS,
+        narrator_styles=NARRATOR_STYLE_OPTIONS,
+        default_age_rating=DEFAULT_AGE_RATING,
+        default_image_style=DEFAULT_IMAGE_STYLE,
+        default_narrator_style=DEFAULT_NARRATOR_STYLE,
+        models=MODEL_OPTIONS if is_gemini else [settings.openai_model],
+        default_model=settings.model_name if is_gemini else settings.openai_model,
+        ai_configured=bool(settings.gemini_api_key) if is_gemini else bool(settings.openai_base_url),
         mock_llm=settings.mock_llm,
     )
 
@@ -107,10 +130,32 @@ def create_turn(
 
 
 @router.delete("/stories/{story_id}", status_code=204)
-def delete_story(story_id: int, db: Session = Depends(get_db)) -> Response:
+def delete_story(
+    story_id: int,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> Response:
     story = db.get(Story, story_id)
     if story is None:
         raise story_engine.StoryNotFoundError("Story not found.")
     db.delete(story)
     db.commit()
+    _delete_story_images(settings, story_id)
     return Response(status_code=204)
+
+
+def _delete_story_images(settings: Settings, story_id: int) -> None:
+    """Remove IMAGE_DIR/{story_id}/ with all scenes and portraits.
+
+    Failures are logged, never fatal: a locked or missing folder must not
+    turn a successful database delete into an error response.
+    """
+    try:
+        base = Path(settings.image_dir).resolve()
+        target = (base / str(story_id)).resolve()
+        if target.parent != base:  # defensive: never delete outside IMAGE_DIR
+            logger.error("refusing to delete suspicious image path: %s", target)
+            return
+        shutil.rmtree(target, ignore_errors=True)
+    except OSError:
+        logger.exception("could not delete images for story %s", story_id)

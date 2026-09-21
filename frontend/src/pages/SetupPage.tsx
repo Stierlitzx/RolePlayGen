@@ -21,6 +21,7 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
   const [tone, setTone] = useState(String(initial?.tone ?? 'Dark'));
   const [heroRole, setHeroRole] = useState(String(initial?.hero_role ?? ''));
   const [heroName, setHeroName] = useState(String(initial?.hero_name ?? ''));
+  const [heroAppearance, setHeroAppearance] = useState(String(initial?.hero_appearance ?? ''));
   const [length, setLength] = useState<Length>((initial?.length as Length) ?? 'short');
   const [customTurns, setCustomTurns] = useState(Number(initial?.custom_turns ?? 50));
   const [model, setModel] = useState(String(initial?.model ?? ''));
@@ -29,7 +30,12 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
   const [customDetails, setCustomDetails] = useState(String(initial?.custom_details ?? ''));
   const [settingCulture, setSettingCulture] = useState(String(initial?.setting_culture ?? ''));
   const [namingCulture, setNamingCulture] = useState(String(initial?.naming_culture ?? ''));
-  const [introExposition, setIntroExposition] = useState(Boolean(initial?.intro_exposition ?? false));
+  const [introExposition, setIntroExposition] = useState(Boolean(initial?.intro_exposition ?? true));
+  const [ageRating, setAgeRating] = useState(String(initial?.age_rating ?? ''));
+  const [explicitSexual, setExplicitSexual] = useState(Boolean(initial?.explicit_sexual ?? false));
+  const [graphicViolence, setGraphicViolence] = useState(Boolean(initial?.graphic_violence ?? false));
+  const [imageStyle, setImageStyle] = useState(String(initial?.image_style ?? ''));
+  const [narratorStyle, setNarratorStyle] = useState(String(initial?.narrator_style ?? ''));
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +45,11 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
       .setupOptions()
       .then((value) => {
         setOptions(value);
+        // Defaults apply both to new stories and to old stories being edited
+        // that predate these fields.
+        setAgeRating((current) => current || value.default_age_rating);
+        setImageStyle((current) => current || value.default_image_style);
+        setNarratorStyle((current) => current || value.default_narrator_style);
         if (!isEditing) {
           setSetting(value.settings[0]);
           setGenres([value.genres[0]]);
@@ -76,6 +87,7 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
       tone,
       hero_role: heroRole.trim() || null,
       hero_name: heroName.trim() || null,
+      hero_appearance: heroAppearance.trim() || null,
       length,
       custom_turns: length === 'custom' ? customTurns : null,
       model: model || null,
@@ -85,6 +97,11 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
       setting_culture: settingCulture || null,
       naming_culture: namingCulture.trim() || null,
       intro_exposition: introExposition,
+      age_rating: ageRating || null,
+      explicit_sexual: ageRating === '18+' && explicitSexual,
+      graphic_violence: ageRating === '18+' && graphicViolence,
+      image_style: imageStyle || null,
+      narrator_style: narratorStyle || null,
     };
     try {
       const story = isEditing && editingStory
@@ -134,9 +151,9 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
         {setting === 'Custom' && (
           <label>
             Custom setting
-            <input
+            <textarea
               value={customSetting}
-              maxLength={300}
+              maxLength={1000}
               required
               onChange={(event) => setCustomSetting(event.target.value)}
             />
@@ -146,7 +163,7 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
           Custom details (optional)
           <textarea
             value={customDetails}
-            maxLength={2000}
+            maxLength={5000}
             placeholder="Plot premise, tone details, characters you want present, relationships, factions, a conflict to start from…"
             onChange={(event) => setCustomDetails(event.target.value)}
           />
@@ -154,7 +171,10 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
         <fieldset>
           <legend>Genre (choose up to {options.max_genres})</legend>
           <div className="pill-grid">
-            {options.genres.map((genre) => (
+            {(ageRating === '18+'
+              ? [...options.genres.filter((g) => g !== 'Random'), ...options.adult_genres, 'Random']
+              : options.genres
+            ).map((genre) => (
               <button
                 key={genre}
                 type="button"
@@ -201,11 +221,15 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
           </label>
           <label>
             Hero role (optional)
-            <input value={heroRole} maxLength={200} onChange={(event) => setHeroRole(event.target.value)} />
+            <textarea value={heroRole} maxLength={1000} onChange={(event) => setHeroRole(event.target.value)} />
           </label>
           <label>
             Hero name (optional)
-            <input value={heroName} maxLength={100} onChange={(event) => setHeroName(event.target.value)} />
+            <input value={heroName} maxLength={200} onChange={(event) => setHeroName(event.target.value)} />
+          </label>
+          <label>
+            Hero appearance (optional — the narrator bases the hero's look and portrait on it)
+            <textarea value={heroAppearance} maxLength={1000} onChange={(event) => setHeroAppearance(event.target.value)} />
           </label>
           <label>
             Story language
@@ -228,7 +252,59 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
                 .map((item) => <option key={item}>{item}</option>)}
             </select>
           </label>
+          <label>
+            Age rating
+            <select
+              value={ageRating}
+              onChange={(event) => {
+                const value = event.target.value;
+                setAgeRating(value);
+                if (value !== '18+') {
+                  // adult genres and flags are 18+-only
+                  setExplicitSexual(false);
+                  setGraphicViolence(false);
+                  setGenres((current) =>
+                    current.filter((genre) => !options.adult_genres.includes(genre)),
+                  );
+                }
+              }}
+            >
+              {options.age_ratings.map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>
+            Narrator style
+            <select value={narratorStyle} onChange={(event) => setNarratorStyle(event.target.value)}>
+              {options.narrator_styles.map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>
+            Image style
+            <select value={imageStyle} onChange={(event) => setImageStyle(event.target.value)}>
+              {options.image_styles.map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
         </div>
+        {ageRating === '18+' && (
+          <div className="adult-options">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={explicitSexual}
+                onChange={(event) => setExplicitSexual(event.target.checked)}
+              />
+              Explicit sexual content (porn-parody / hentai level)
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={graphicViolence}
+                onChange={(event) => setGraphicViolence(event.target.checked)}
+              />
+              Graphic violence and gore
+            </label>
+          </div>
+        )}
         <label className="checkbox-label">
           <input
             type="checkbox"
@@ -241,7 +317,7 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
           Content restrictions (optional)
           <textarea
             value={restrictions}
-            maxLength={500}
+            maxLength={2000}
             onChange={(event) => setRestrictions(event.target.value)}
           />
         </label>

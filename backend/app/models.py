@@ -73,6 +73,9 @@ class Character(Base):
     relationship: Mapped[str | None] = mapped_column(String(200), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     appearance_tags: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Version history of the character's look; the latest entry is current:
+    # [{"appearance_tags", "pose", "expression", "portrait_path", "turn_id"}]
+    portrait_history: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
     first_seen_turn_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     portrait_status: Mapped[str] = mapped_column(String(20), default="none", nullable=False)
     portrait_path: Mapped[str | None] = mapped_column(String(500), nullable=True)

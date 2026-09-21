@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type CharacterInfo } from '../api';
+import ZoomableImage from './Lightbox';
 
 interface Props {
   storyId: number;
@@ -9,8 +10,11 @@ interface Props {
 
 const PORTRAIT_ASPECT = '4 / 5';
 
-function PortraitThumb({ character }: { character: CharacterInfo }) {
+function PortraitThumb({ character, zoomable = false }: { character: CharacterInfo; zoomable?: boolean }) {
   if (character.portrait_status === 'done' && character.portrait_url) {
+    if (zoomable) {
+      return <ZoomableImage src={character.portrait_url} alt={`Portrait of ${character.name}`} />;
+    }
     return <img src={character.portrait_url} alt={`Portrait of ${character.name}`} />;
   }
   if (character.portrait_status === 'queued' || character.portrait_status === 'generating') {
@@ -104,7 +108,7 @@ export default function CharactersPanel({ storyId, refreshKey = 0 }: Props) {
         <div className="character-detail" role="dialog" aria-label={`About ${selected.name}`}>
           <div className="character-detail-body">
             <div className="character-detail-portrait">
-              <PortraitThumb character={selected} />
+              <PortraitThumb character={selected} zoomable />
             </div>
             <div>
               <h2>

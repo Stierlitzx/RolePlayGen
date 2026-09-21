@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ImageStatus, Turn } from '../api';
 import ImageBlock from './ImageBlock';
@@ -51,7 +51,7 @@ describe('ImageBlock', () => {
     expect(placeholder).toHaveStyle({ aspectRatio: '4 / 5' });
   });
 
-  it('shows the image with a full-size link when done', () => {
+  it('opens the image in the fullscreen lightbox when done', () => {
     render(
       <ImageBlock
         turn={makeTurn({ image_status: 'done', image_url: '/media/1/1.png', image_format: 'wide' })}
@@ -59,8 +59,14 @@ describe('ImageBlock', () => {
     );
     const img = screen.getByAltText('Scene illustration');
     expect(img).toHaveAttribute('src', '/media/1/1.png');
-    expect(img.closest('a')).toHaveAttribute('href', '/media/1/1.png');
-    expect(img.closest('a')).toHaveAttribute('target', '_blank');
+    expect(img.closest('a')).toBeNull(); // no more raw-file new tab
+
+    fireEvent.click(img);
+    const dialog = screen.getByRole('dialog', { name: 'Scene illustration' });
+    expect(within(dialog).getByAltText('Scene illustration')).toHaveAttribute('src', '/media/1/1.png');
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('shows the failure reason and a Retry button when failed', () => {

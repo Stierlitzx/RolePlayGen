@@ -20,7 +20,8 @@ import httpx
 
 from ..config import Settings, get_settings
 from ..db import SessionLocal
-from ..models import Character, Turn
+from ..models import Character, Story, Turn
+from ..setup_options import image_style_tags, images_are_explicit
 
 logger = logging.getLogger(__name__)
 
@@ -28,25 +29,36 @@ WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / "comfy_workflows"
 FORMATS = ("portrait", "wide")
 REQUIRED_NODES = {"6": "CLIPTextEncode", "7": "CLIPTextEncode", "3": "KSampler", "13": "KSampler", "9": "SaveImage"}
 
-QUALITY_PREFIX = ["masterpiece", "best quality", "amazing quality", "general"]
-PORTRAIT_SUFFIX = ["portrait", "close-up", "looking at viewer", "simple background"]
+QUALITY_TOKENS = ["masterpiece", "best quality", "amazing quality"]
+PORTRAIT_SUFFIX = ["full body", "standing", "looking at viewer", "simple background"]
 BANNED_TOKENS = {
     "masterpiece", "best quality", "amazing quality", "general",
     "nsfw", "explicit", "questionable", "sensitive",
 }
+# Quality words are always stripped (the backend adds them itself); rating
+# tokens are stripped too unless the story is explicitly 18+.
+QUALITY_TOKENS_SET = {"masterpiece", "best quality", "amazing quality", "general"}
 PERSON_TAGS = {"1girl", "1boy", "2girls", "2boys", "1other", "multiple girls", "multiple boys"}
+
+
+def _quality_prefix(explicit: bool) -> list[str]:
+    return [*QUALITY_TOKENS, "explicit" if explicit else "general"]
 
 
 class ImageGenerationError(RuntimeError):
     pass
 
 
-def sanitize_tags(image_prompt: str) -> list[str]:
-    """Split the narrator tags, trim them and drop quality/rating tokens."""
+def sanitize_tags(image_prompt: str, allow_explicit: bool = False) -> list[str]:
+    """Split the narrator tags, trim them and drop quality/rating tokens.
+
+    Rating tokens pass through only for 18+ stories with explicit content on.
+    """
+    banned = QUALITY_TOKENS_SET if allow_explicit else BANNED_TOKENS
     tags = []
     for raw in image_prompt.split(","):
         tag = raw.strip()
-        if tag and tag.lower() not in BANNED_TOKENS:
+        if tag and tag.lower() not in banned:
             tags.append(tag)
     return tags
 
@@ -55,20 +67,25 @@ def assemble_positive_prompt(
     image_prompt: str,
     hero_tags: str = "",
     character_tags: list[str] | None = None,
+    style_tags: str = "",
+    explicit: bool = False,
 ) -> str:
-    """Scene prompt: quality prefix, then known appearance tags (hero first,
-    then the other characters in scene order), then the narrator's tags.
+    """Scene prompt: quality prefix (with the story's rating token), then the
+    art style tags, then known appearance tags (hero first, then the other
+    characters in scene order), then the narrator's tags.
 
     Appearance is spliced in by the backend so a character keeps the same look
     across turns even though the text model has no memory between generations.
     """
-    parts: list[str] = list(QUALITY_PREFIX)
+    parts: list[str] = _quality_prefix(explicit)
+    if style_tags.strip():
+        parts.append(style_tags.strip())
     if hero_tags.strip():
         parts.append(hero_tags.strip())
     for tags in character_tags or []:
         if tags.strip():
             parts.append(tags.strip())
-    tags = sanitize_tags(image_prompt)
+    tags = sanitize_tags(image_prompt, allow_explicit=explicit)
     lowered = {t.lower() for t in tags}
     if lowered & PERSON_TAGS and "adult" not in lowered:
         tags.append("adult")
@@ -78,14 +95,26 @@ def assemble_positive_prompt(
     return prompt
 
 
-def assemble_portrait_prompt(appearance_tags: str) -> str:
-    """Portrait prompt: quality prefix + the character's own tags + framing."""
-    parts: list[str] = list(QUALITY_PREFIX)
-    tags = sanitize_tags(appearance_tags)
+def assemble_portrait_prompt(
+    appearance_tags: str,
+    pose: str = "",
+    expression: str = "",
+    style_tags: str = "",
+    explicit: bool = False,
+) -> str:
+    """Portrait prompt: quality prefix + style + the character's own tags +
+    this portrait's pose/expression + full-body framing."""
+    parts: list[str] = _quality_prefix(explicit)
+    if style_tags.strip():
+        parts.append(style_tags.strip())
+    tags = sanitize_tags(appearance_tags, allow_explicit=explicit)
     lowered = {t.lower() for t in tags}
     if lowered & PERSON_TAGS and "adult" not in lowered:
         tags.append("adult")
     parts.extend(tags)
+    for extra in (pose, expression):
+        if extra and extra.strip():
+            parts.append(extra.strip())
     parts.extend(PORTRAIT_SUFFIX)
     prompt = ", ".join(parts)
     logger.debug("portrait prompt: %s", prompt)
@@ -113,10 +142,16 @@ def build_workflow(
     positive_prompt: str,
     filename_prefix: str,
     seed: int | None = None,
+    negative_extra: str = "",
 ) -> dict[str, Any]:
     workflow = copy.deepcopy(load_workflow(image_format))
     seed = seed if seed is not None else random.randint(0, 2**31 - 1)
     workflow["6"]["inputs"]["text"] = positive_prompt
+    if negative_extra.strip():
+        existing_negative = str(workflow["7"]["inputs"].get("text", "")).strip()
+        workflow["7"]["inputs"]["text"] = (
+            f"{existing_negative}, {negative_extra.strip()}" if existing_negative else negative_extra.strip()
+        )
     workflow["3"]["inputs"]["seed"] = seed
     workflow["13"]["inputs"]["seed"] = seed
     workflow["9"]["inputs"]["filename_prefix"] = filename_prefix
@@ -359,6 +394,26 @@ def _get_with_retry(db: Any, model: type, row_id: int) -> Any:
     return None
 
 
+def _current_look(character: Character) -> tuple[str, str, str]:
+    """(appearance_tags, pose, expression) of the character's current version."""
+    if character.portrait_history:
+        current = character.portrait_history[-1]
+        return (
+            current.get("appearance_tags") or character.appearance_tags or "",
+            current.get("pose") or "",
+            current.get("expression") or "",
+        )
+    return character.appearance_tags or "", "", ""
+
+
+def _story_image_params(db: Any, story_id: int) -> tuple[str, str, bool]:
+    """(style positive tags, style negative tags, explicit) for a story."""
+    story = db.get(Story, story_id)
+    params = story.settings if story and story.settings else {}
+    style = image_style_tags(params.get("image_style"))
+    return style["positive"], style["negative"], images_are_explicit(params)
+
+
 def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
     settings = settings or get_settings()
     db = SessionLocal()
@@ -378,10 +433,15 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                 _mock_png(Path(settings.image_dir) / relative)
             else:
                 hero_tags, character_tags = _scene_appearance_tags(db, turn)
+                style_pos, style_neg, explicit = _story_image_params(db, turn.story_id)
                 workflow = build_workflow(
                     turn.image_format or "wide",
-                    assemble_positive_prompt(turn.image_prompt, hero_tags, character_tags),
+                    assemble_positive_prompt(
+                        turn.image_prompt, hero_tags, character_tags,
+                        style_tags=style_pos, explicit=explicit,
+                    ),
                     filename_prefix=f"story_{turn.story_id}_{turn.id}",
+                    negative_extra=style_neg,
                 )
                 references = _reference_images_for_turn(db, turn, settings)
                 with _client(settings) as client:
@@ -446,10 +506,16 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                 directory.mkdir(parents=True, exist_ok=True)
                 _mock_png(Path(settings.image_dir) / relative)
             else:
+                style_pos, style_neg, explicit = _story_image_params(db, character.story_id)
+                tags, pose, expression = _current_look(character)
                 workflow = build_workflow(
                     "portrait",
-                    assemble_portrait_prompt(character.appearance_tags),
+                    assemble_portrait_prompt(
+                        tags, pose=pose, expression=expression,
+                        style_tags=style_pos, explicit=explicit,
+                    ),
                     filename_prefix=f"story_{character.story_id}_char_{character.id}",
+                    negative_extra=style_neg,
                 )
                 with _client(settings) as client:
                     prompt_id = submit_job(client, workflow)
@@ -458,6 +524,10 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                 relative = save_portrait(data, settings, character.story_id, character.id)
             character.portrait_status = "done"
             character.portrait_path = relative
+            if character.portrait_history:
+                history = [dict(entry) for entry in character.portrait_history]
+                history[-1]["portrait_path"] = relative
+                character.portrait_history = history
         except ImageGenerationError as exc:
             character.portrait_status = "failed"
             character.portrait_error = str(exc)

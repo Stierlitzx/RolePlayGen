@@ -3,6 +3,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .setup_options import (
+    ADULT_GENRE_OPTIONS,
+    ADULT_RATING,
+    AGE_RATING_OPTIONS,
+    IMAGE_STYLE_OPTIONS,
+    NARRATOR_STYLE_OPTIONS,
+)
+
 ChoiceMode = Literal["open", "locked", "binary"]
 PlayerInputType = Literal["option", "custom", "start"]
 StoryStatus = Literal["active", "finished"]
@@ -56,6 +64,12 @@ class CharacterReport(BaseModel):
     relationship: str | None = Field(default=None, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
     appearance_tags: str | None = Field(default=None, max_length=1000)
+    # Per-portrait variation (never part of the fixed appearance_tags).
+    pose: str | None = Field(default=None, max_length=200)
+    expression: str | None = Field(default=None, max_length=200)
+    # Portrait evolution: update = new persistent look; revert = back to previous.
+    portrait_update: bool = False
+    portrait_revert: bool = False
 
 
 class HeroReport(BaseModel):
@@ -87,25 +101,47 @@ class TurnContract(BaseModel):
 
 class StoryCreate(BaseModel):
     setting: str = Field(min_length=1, max_length=200)
-    custom_setting: str | None = Field(default=None, max_length=300)
-    genres: list[str] = Field(min_length=1, max_length=3)
+    custom_setting: str | None = Field(default=None, max_length=1000)
+    genres: list[str] = Field(min_length=1, max_length=5)
     tone: str = Field(min_length=1, max_length=100)
-    hero_role: str | None = Field(default=None, max_length=200)
-    hero_name: str | None = Field(default=None, max_length=100)
+    hero_role: str | None = Field(default=None, max_length=1000)
+    hero_name: str | None = Field(default=None, max_length=200)
+    hero_appearance: str | None = Field(default=None, max_length=1000)
     length: Literal["short", "medium", "long", "custom"]
     custom_turns: int | None = Field(default=None, ge=50, le=500)
     model: str | None = Field(default=None, max_length=100)
-    content_restrictions: str | None = Field(default=None, max_length=500)
+    content_restrictions: str | None = Field(default=None, max_length=2000)
     language: Literal["Russian", "English", "Kazakh"] = "Russian"
-    custom_details: str | None = Field(default=None, max_length=2000)
+    custom_details: str | None = Field(default=None, max_length=5000)
     setting_culture: str | None = Field(default=None, max_length=100)
     naming_culture: str | None = Field(default=None, max_length=100)
-    intro_exposition: bool = False
+    intro_exposition: bool = True
+    age_rating: str | None = Field(default=None, max_length=10)
+    explicit_sexual: bool = False
+    graphic_violence: bool = False
+    image_style: str | None = Field(default=None, max_length=100)
+    narrator_style: str | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def custom_length_needs_turns(self) -> "StoryCreate":
         if self.length == "custom" and self.custom_turns is None:
             raise ValueError("custom length requires custom_turns (50-500)")
+        return self
+
+    @model_validator(mode="after")
+    def adult_options_require_adult_rating(self) -> "StoryCreate":
+        if self.age_rating is not None and self.age_rating not in AGE_RATING_OPTIONS:
+            raise ValueError(f"age_rating must be one of {AGE_RATING_OPTIONS}")
+        if self.image_style is not None and self.image_style not in IMAGE_STYLE_OPTIONS:
+            raise ValueError("unknown image_style")
+        if self.narrator_style is not None and self.narrator_style not in NARRATOR_STYLE_OPTIONS:
+            raise ValueError("unknown narrator_style")
+        if self.age_rating != ADULT_RATING:
+            if self.explicit_sexual or self.graphic_violence:
+                raise ValueError("explicit content options require age_rating 18+")
+            adult_used = [g for g in self.genres if g in ADULT_GENRE_OPTIONS]
+            if adult_used:
+                raise ValueError(f"adult genres require age_rating 18+: {adult_used}")
         return self
 
 
@@ -179,6 +215,13 @@ class SetupOptions(BaseModel):
     languages: list[str]
     cultures: list[str]
     max_genres: int
+    age_ratings: list[str]
+    adult_genres: list[str]
+    image_styles: list[str]
+    narrator_styles: list[str]
+    default_age_rating: str
+    default_image_style: str
+    default_narrator_style: str
     models: list[str]
     default_model: str
     ai_configured: bool

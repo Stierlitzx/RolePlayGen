@@ -11,8 +11,10 @@ from ..config import Settings
 from ..models import Character, Story, Turn
 from ..schemas import TurnContract, TurnCreate
 from ..setup_options import (
+    age_rating_clause,
     effective_culture,
     effective_naming_culture,
+    narrator_style_fragment,
     resolve_randoms,
     setting_description,
 )
@@ -72,9 +74,10 @@ def max_turns_for_length(length: str, custom_turns: int | None = None) -> int | 
 
 
 def create_story(db: Session, payload: Any, settings: Settings) -> Story:
-    if not settings.mock_llm and not settings.gemini_api_key:
+    if not settings.mock_llm and (settings.llm_provider or "gemini") == "gemini" and not settings.gemini_api_key:
         raise MissingAIKeyError(
-            "Gemini API key is not configured. Add GEMINI_API_KEY to .env or enable MOCK_LLM=true."
+            "Gemini API key is not configured. Add GEMINI_API_KEY to .env, switch "
+            "LLM_PROVIDER=openai for a local model, or enable MOCK_LLM=true."
         )
     settings_data = resolve_randoms(payload.model_dump())
     story = Story(
@@ -95,7 +98,28 @@ def update_story(db: Session, story_id: int, payload: Any, settings: Settings) -
     if story is None:
         raise StoryNotFoundError("Story not found.")
     if len(story.turns) > 1:
-        raise InvalidPlayerInputError("Setup can only be changed before the second turn.")
+        # Mid-story only the narrator voice may change; every other field is frozen.
+        incoming = payload.model_dump()
+        current = dict(story.settings)
+        mismatched = []
+        for key, value in incoming.items():
+            if key == "narrator_style":
+                continue
+            if key in current:
+                if current[key] != value:
+                    mismatched.append(key)
+            elif value not in (None, False):
+                # field did not exist when the story was created; only defaults are OK
+                mismatched.append(key)
+        if mismatched:
+            raise InvalidPlayerInputError(
+                "Only the narrator style can be changed after the story has started "
+                f"(tried to change: {', '.join(mismatched)})."
+            )
+        story.settings = {**current, "narrator_style": payload.narrator_style}
+        db.commit()
+        db.refresh(story)
+        return story
     settings_data = resolve_randoms(payload.model_dump())
     story.title = story_title(settings_data)
     story.settings = settings_data
@@ -157,10 +181,26 @@ def add_turn(db: Session, story_id: int, payload: TurnCreate, settings: Settings
     return turn
 
 
+def _system_prompt(story: Story) -> str:
+    """Base narrator prompt + the story's narrator voice + age rating clause.
+
+    Both additions are empty strings for stories created before those fields
+    existed, so old stories keep their exact previous prompt.
+    """
+    parts = [load_prompt("narrator_system.txt")]
+    style = narrator_style_fragment(story.settings.get("narrator_style"))
+    if style:
+        parts.append(style)
+    rating = age_rating_clause(story.settings)
+    if rating:
+        parts.append(rating)
+    return "\n\n".join(parts)
+
+
 def _generate_turn(db: Session, story: Story, input_type: str, input_text: str, settings: Settings) -> Turn:
     turn_number = len(story.turns) + 1
     user_prompt = _build_prompt(story, input_type, input_text, turn_number)
-    system_prompt = load_prompt("narrator_system.txt")
+    system_prompt = _system_prompt(story)
     errors: list[str] = []
 
     for attempt in range(2):
@@ -188,10 +228,20 @@ def _generate_turn(db: Session, story: Story, input_type: str, input_text: str, 
         except LLMResponseError as exc:
             raise InvalidModelResponseError(str(exc)) from exc
         except (json.JSONDecodeError, ValidationError, ValueError) as exc:
+            logger.warning(
+                "story %s turn %s attempt %s failed contract validation: %s | raw (first 500 chars): %.500s",
+                story.id,
+                turn_number,
+                attempt + 1,
+                exc,
+                raw,
+            )
             errors.append(str(exc))
             if attempt == 0:
                 continue
-            raise InvalidModelResponseError("The AI returned an invalid turn after one retry.") from exc
+            raise InvalidModelResponseError(
+                f"The AI returned an invalid turn after one retry. Cause: {errors[-1][:300]}"
+            ) from exc
 
         turn = Turn(
             story_id=story.id,
@@ -241,6 +291,61 @@ def _queue_portrait(character: Character, settings: Settings) -> None:
     image_service.enqueue_portrait(character.id)
 
 
+def _history_entry(
+    tags: str, pose: str | None, expression: str | None, path: str | None, turn_id: int | None
+) -> dict[str, Any]:
+    return {
+        "appearance_tags": tags,
+        "pose": pose or "",
+        "expression": expression or "",
+        "portrait_path": path,
+        "turn_id": turn_id,
+    }
+
+
+def _init_history(character: Character) -> list[dict[str, Any]]:
+    """Characters created before versioning get a one-entry history from their
+    current data; already-versioned characters keep theirs."""
+    if character.portrait_history:
+        return [dict(entry) for entry in character.portrait_history]
+    return [
+        _history_entry(
+            character.appearance_tags or "", None, None,
+            character.portrait_path, character.first_seen_turn_id,
+        )
+    ]
+
+
+def _apply_portrait_update(
+    character: Character, entry: Any, turn: Turn, settings: Settings
+) -> None:
+    """New persistent look: append a history entry and queue one portrait job."""
+    new_tags = (entry.appearance_tags or "").strip()
+    if not new_tags:
+        logger.warning("portrait_update for %r without appearance_tags; ignored", character.name)
+        return
+    history = _init_history(character)
+    history.append(_history_entry(new_tags, entry.pose, entry.expression, None, turn.id))
+    character.portrait_history = history
+    character.appearance_tags = new_tags
+    _queue_portrait(character, settings)
+
+
+def _apply_portrait_revert(character: Character) -> None:
+    """Back to the previous look: instant, reuses the already-generated file."""
+    history = _init_history(character)
+    if len(history) < 2:
+        logger.warning("portrait_revert for %r without a previous look; ignored", character.name)
+        return
+    history.pop()  # drop the current look
+    previous = history[-1]
+    character.portrait_history = history
+    character.appearance_tags = previous.get("appearance_tags") or character.appearance_tags
+    character.portrait_path = previous.get("portrait_path")
+    character.portrait_status = "done" if character.portrait_path else "none"
+    character.portrait_error = None
+
+
 def _process_character_reports(
     db: Session, story: Story, turn: Turn, contract: TurnContract, settings: Settings
 ) -> None:
@@ -267,6 +372,7 @@ def _process_character_reports(
             )
             db.add(hero)
             db.flush()
+            hero.portrait_history = _init_history(hero)
             _queue_portrait(hero, settings)
         elif contract.hero.appearance_tags and not hero.appearance_tags:
             hero.appearance_tags = contract.hero.appearance_tags.strip()
@@ -295,6 +401,9 @@ def _process_character_reports(
             )
             db.add(character)
             db.flush()
+            character.portrait_history = [
+                _history_entry(character.appearance_tags or "", entry.pose, entry.expression, None, turn.id)
+            ]
             _queue_portrait(character, settings)
             continue
         # Existing character: only the relationship is refreshed; description
@@ -310,6 +419,12 @@ def _process_character_reports(
                 existing.appearance_tags = entry.appearance_tags.strip()
                 if existing.portrait_status == "none":
                     _queue_portrait(existing, settings)
+        if entry.portrait_update and entry.portrait_revert:
+            logger.warning("portrait_update and portrait_revert together for %r; update wins", name)
+        if entry.portrait_update:
+            _apply_portrait_update(existing, entry, turn, settings)
+        elif entry.portrait_revert:
+            _apply_portrait_revert(existing)
 
 
 def _parse_contract(raw: str) -> TurnContract:
@@ -317,7 +432,16 @@ def _parse_contract(raw: str) -> TurnContract:
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(line for line in lines if not line.startswith("```")).strip()
-    return TurnContract.model_validate(json.loads(text))
+    try:
+        return TurnContract.model_validate(json.loads(text))
+    except json.JSONDecodeError:
+        # Some models wrap the JSON in prose ("Here is the next turn: ...").
+        # Salvage the outermost JSON object before giving up.
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            return TurnContract.model_validate(json.loads(text[start : end + 1]))
+        raise
 
 
 def _build_prompt(story: Story, input_type: str, input_text: str, turn_number: int) -> str:
@@ -385,6 +509,7 @@ def _build_prompt(story: Story, input_type: str, input_text: str, turn_number: i
         tone=params.get("tone", ""),
         hero_role=params.get("hero_role") or "Invented by narrator",
         hero_name=params.get("hero_name") or "Invented by narrator",
+        hero_appearance=params.get("hero_appearance") or "Invented by narrator",
         language=language,
         setting_culture=effective_culture(params.get("setting_culture"), language),
         naming_culture=effective_naming_culture(

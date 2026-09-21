@@ -6,6 +6,8 @@ from pathlib import Path
 os.environ["DATABASE_URL"] = "sqlite:///:memory:"
 os.environ["MOCK_LLM"] = "true"
 os.environ["GEMINI_API_KEY"] = ""
+# Tests must not inherit the developer's provider choice from backend/.env.
+os.environ["LLM_PROVIDER"] = "gemini"
 # Never start image jobs in tests; the backend/.env file enables them locally.
 os.environ["IMAGE_GENERATION_ENABLED"] = "false"
 

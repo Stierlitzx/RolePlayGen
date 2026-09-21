@@ -41,7 +41,9 @@ describe('IntroducedCharacters', () => {
     );
     const img = screen.getByAltText('Portrait of Kaelen');
     expect(img).toHaveAttribute('src', '/media/1/char_1.png');
-    expect(img.closest('a')).toHaveAttribute('target', '_blank');
+    expect(img.closest('a')).toBeNull(); // opens in the lightbox, not a new tab
+    fireEvent.click(img);
+    expect(screen.getByRole('dialog', { name: 'Portrait of Kaelen' })).toBeInTheDocument();
     expect(screen.getByText('Kaelen')).toBeInTheDocument();
     expect(screen.getByText(/sky pirate captain/)).toBeInTheDocument();
   });

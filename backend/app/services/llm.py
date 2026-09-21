@@ -1,9 +1,12 @@
 import json
+import logging
 from typing import Any
 
 import httpx
 
 from ..config import Settings
+
+logger = logging.getLogger(__name__)
 
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
@@ -14,6 +17,21 @@ MODEL_FALLBACK_ORDER = [
     "gemini-3.6-flash",
     "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
+]
+
+
+# Fiction often brushes against Gemini's default safety filters (dark themes,
+# violence, romance). BLOCK_ONLY_HIGH keeps the true hard limits while not
+# tripping on ordinary dramatic narration. The app's own rating system sits on
+# top of this and governs what the narrator is allowed to write.
+SAFETY_SETTINGS = [
+    {"category": category, "threshold": "BLOCK_ONLY_HIGH"}
+    for category in (
+        "HARM_CATEGORY_HARASSMENT",
+        "HARM_CATEGORY_HATE_SPEECH",
+        "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+        "HARM_CATEGORY_DANGEROUS_CONTENT",
+    )
 ]
 
 
@@ -227,6 +245,19 @@ def call_model(
             ensure_ascii=False,
         )
 
+    provider = (settings.llm_provider or "gemini").lower()
+    if provider == "openai":
+        if not settings.openai_base_url:
+            raise LLMConfigurationError(
+                "OPENAI_BASE_URL is not configured. Point it at your local server "
+                "(e.g. http://localhost:11434/v1 for Ollama)."
+            )
+        return _call_openai(model_name or settings.openai_model, system_prompt, user_prompt, settings)
+    if provider != "gemini":
+        raise LLMConfigurationError(
+            f"Unknown LLM_PROVIDER '{settings.llm_provider}' (expected 'gemini' or 'openai')."
+        )
+
     if not settings.gemini_api_key:
         raise LLMConfigurationError(
             "Gemini API key is not configured. Add GEMINI_API_KEY to .env or enable MOCK_LLM=true."
@@ -256,6 +287,7 @@ def _call_gemini(model: str, system_prompt: str, user_prompt: str, settings: Set
             "temperature": 0.9,
             "responseMimeType": "application/json",
         },
+        "safetySettings": SAFETY_SETTINGS,
     }
     try:
         response = httpx.post(
@@ -276,11 +308,117 @@ def _call_gemini(model: str, system_prompt: str, user_prompt: str, settings: Set
         raise LLMResponseError(f"The AI service returned an error ({response.status_code}): {detail}")
 
     data = response.json()
+    prompt_block = (data.get("promptFeedback") or {}).get("blockReason")
+    if prompt_block:
+        raise LLMResponseError(
+            f"The model refused the prompt (reason: {prompt_block}). Soften the setup wording "
+            "(custom details, hero description) or lower the story's age rating."
+        )
+    candidates = data.get("candidates") or []
+    finish_reason = candidates[0].get("finishReason") if candidates else None
     try:
         parts = data["candidates"][0]["content"]["parts"]
         text = "".join(part.get("text", "") for part in parts)
     except (KeyError, IndexError, TypeError) as exc:
-        raise LLMResponseError("The AI service returned an unexpected response shape.") from exc
+        raise LLMResponseError(_finish_reason_message(finish_reason, candidates)) from exc
     if not text.strip():
-        raise LLMResponseError("The AI service returned no text.")
+        raise LLMResponseError(_finish_reason_message(finish_reason, candidates))
     return text
+
+
+def _call_openai(model: str, system_prompt: str, user_prompt: str, settings: Settings) -> str:
+    """Any OpenAI-compatible chat endpoint (Ollama, LM Studio, llama.cpp).
+
+    Local servers are slower than the cloud, so the timeout is generous; there
+    is no safety layer here — content is governed solely by our narrator prompt.
+    """
+    url = settings.openai_base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.9,
+        "max_tokens": settings.max_tokens,
+        "response_format": {"type": "json_object"},
+        # Reasoning models (Nemotron, Qwen-thinking, …) otherwise burn the
+        # token budget on chain-of-thought — or leak it into the content and
+        # break the JSON contract. Non-reasoning servers ignore this field.
+        "reasoning": {"enabled": False},
+    }
+    headers = {"Content-Type": "application/json"}
+    if settings.openai_api_key:
+        headers["Authorization"] = f"Bearer {settings.openai_api_key}"
+    try:
+        response = httpx.post(url, headers=headers, json=payload, timeout=300.0)
+    except httpx.HTTPError as exc:
+        raise LLMResponseError(
+            f"The model server could not be reached at {settings.openai_base_url}: {exc}. "
+            "Start Ollama/LM Studio, check the cloud endpoint, or switch LLM_PROVIDER back to gemini."
+        ) from exc
+
+    if response.status_code != 200:
+        detail = ""
+        try:
+            err = response.json().get("error", {})
+            if isinstance(err, dict):
+                detail = str(err.get("message", ""))
+                metadata = err.get("metadata") or {}
+                raw = metadata.get("raw") if isinstance(metadata, dict) else None
+                if raw:
+                    detail += f" | upstream: {str(raw)[:200]}"
+            else:
+                detail = str(err)
+        except ValueError:
+            detail = response.text[:300]
+        hint = ""
+        if response.status_code == 429:
+            hint = " Rate limit hit — free models are shared; wait a bit and retry."
+        raise LLMResponseError(f"The model server returned an error ({response.status_code}): {detail}{hint}")
+
+    data = response.json()
+    # OpenRouter can return HTTP 200 with an error body when the upstream
+    # provider fails mid-generation.
+    if isinstance(data, dict) and data.get("error"):
+        err = data["error"]
+        message_text = err.get("message", "") if isinstance(err, dict) else str(err)
+        raise LLMResponseError(f"The model server returned an error: {message_text}")
+    try:
+        text = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        logger.warning(
+            "openai-compatible response had unexpected shape: %.500s",
+            json.dumps(data, ensure_ascii=False, default=str),
+        )
+        raise LLMResponseError("The model server returned an unexpected response shape.") from exc
+    if not text or not str(text).strip():
+        raise LLMResponseError("The model server returned no text.")
+    return str(text)
+
+
+def _finish_reason_message(finish_reason: str | None, candidates: list[Any]) -> str:
+    """Human-readable error for responses without usable text.
+
+    A safety block used to surface as "unexpected response shape"; name the real
+    cause so the player knows what to change.
+    """
+    if finish_reason == "SAFETY":
+        ratings = (candidates[0].get("safetyRatings") or []) if candidates else []
+        flagged = [
+            str(rating["category"]).replace("HARM_CATEGORY_", "").replace("_", " ").lower()
+            for rating in ratings
+            if rating.get("probability") in ("MEDIUM", "HIGH") and rating.get("category")
+        ]
+        detail = f" ({', '.join(flagged)})" if flagged else ""
+        return (
+            f"The model blocked this turn as unsafe{detail}. Gemini's own limits apply on top of "
+            "the story's age rating — soften the scene or the setup wording and try again."
+        )
+    if finish_reason == "MAX_TOKENS":
+        return "The model's answer did not fit the token limit. Try again or raise MAX_TOKENS in .env."
+    if finish_reason == "RECITATION":
+        return "The model stopped its answer to avoid reproducing existing text. Try again."
+    if finish_reason:
+        return f"The model stopped without producing text (reason: {finish_reason}). Try again."
+    return "The AI service returned an unexpected response shape."
