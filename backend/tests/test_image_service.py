@@ -138,3 +138,40 @@ def test_reset_interrupted_turns(db_session, monkeypatch) -> None:
     assert count == 2
     statuses = [t.image_status for t in db_session.query(Turn).order_by(Turn.index).all()]
     assert statuses == ["failed", "failed", "done"]
+
+def test_wait_for_result_timeout_cancels_running_job() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/queue":
+            return httpx.Response(200, json={"queue_running": [[0, "abc-123"]], "queue_pending": []})
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    with pytest.raises(ImageGenerationError, match="timed out"):
+        wait_for_result(client, "abc-123", 0)
+    assert ("POST", "/queue") in calls  # remove from pending queue
+    assert ("POST", "/interrupt") in calls  # it was the running job
+
+
+def test_wait_for_result_timeout_does_not_interrupt_other_jobs() -> None:
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.method == "GET" and request.url.path == "/queue":
+            return httpx.Response(200, json={"queue_running": [[0, "someone-else"]], "queue_pending": []})
+        return httpx.Response(200, json={})
+
+    client = make_client(handler)
+    with pytest.raises(ImageGenerationError, match="timed out"):
+        wait_for_result(client, "abc-123", 0)
+    assert ("POST", "/queue") in calls
+    assert ("POST", "/interrupt") not in calls
+
+
+def test_cancel_job_tolerates_comfy_down() -> None:
+    client = httpx.Client(base_url="http://127.0.0.1:9", timeout=1.0)
+    image_service.cancel_job(client, "abc-123")  # must not raise
+

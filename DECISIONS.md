@@ -28,3 +28,7 @@ The AI provider was switched from Anthropic Claude to Google Gemini (user reques
 
 - Requests now send `safetySettings` with `BLOCK_ONLY_HIGH` for the four harm categories. Fiction (dark themes, violence, romance â€” especially 18+ stories) constantly tripped Gemini's default medium threshold; the app's own age-rating system governs content, so the API threshold only guards Gemini's hard limits.
 - A safety block used to reach the player as "The AI service returned an unexpected response shape." `_call_gemini` now reads `promptFeedback.blockReason` and `candidates[].finishReason`/`safetyRatings` and raises a message that names the cause ("refused the prompt", "blocked this turn as unsafe (sexually explicit)", token limit, recitation) with a hint about what to change. The generic message stays as a last resort.
+
+## 2026-09-22: Cancel stale ComfyUI jobs on timeout
+
+- Found by a live handoff test (Ollama qwen3-8b resident on the same 8 GB GPU as ComfyUI): image jobs exceeded `IMAGE_TIMEOUT_SECONDS` and were marked `failed`, but ComfyUI kept running them; later jobs queued behind the stale backlog and timed out too — the pipeline never recovered on its own. `wait_for_result` now calls `cancel_job` on timeout: delete the prompt from the ComfyUI queue, and `/interrupt` only when it is the currently running job. Best-effort, never raises.

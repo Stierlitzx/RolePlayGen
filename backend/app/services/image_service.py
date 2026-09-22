@@ -175,6 +175,19 @@ def submit_job(client: httpx.Client, workflow: dict[str, Any]) -> str:
     return str(prompt_id)
 
 
+def cancel_job(client: httpx.Client, prompt_id: str) -> None:
+    """Best-effort cancel of a job we gave up on, so ComfyUI does not keep
+    burning GPU on it and block every later job behind the stale backlog.
+    Never raises — cancellation is a cleanup, not part of the job result."""
+    try:
+        client.post("/queue", json={"delete": [prompt_id]})
+        running = client.get("/queue").json().get("queue_running", [])
+        if any(len(entry) > 1 and str(entry[1]) == prompt_id for entry in running):
+            client.post("/interrupt")
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("could not cancel ComfyUI job %s: %s", prompt_id, exc)
+
+
 def wait_for_result(client: httpx.Client, prompt_id: str, timeout_seconds: int) -> dict[str, str]:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -191,6 +204,7 @@ def wait_for_result(client: httpx.Client, prompt_id: str, timeout_seconds: int) 
                     return images[0]
                 raise ImageGenerationError("ComfyUI finished but produced no image")
         time.sleep(1.5)
+    cancel_job(client, prompt_id)
     raise ImageGenerationError(f"Image generation timed out after {timeout_seconds}s")
 
 

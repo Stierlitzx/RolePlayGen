@@ -78,7 +78,7 @@ Image settings in `.env`:
 | --- | --- |
 | `IMAGE_GENERATION_ENABLED` | `true` to draw scenes; `false` hides the feature entirely |
 | `COMFYUI_URL` | where ComfyUI listens (default `http://127.0.0.1:8188`) |
-| `IMAGE_TIMEOUT_SECONDS` | how long one job may take (default 300) |
+| `IMAGE_TIMEOUT_SECONDS` | how long one job may take (default 300; raise to ~900 if a GPU-resident local text model slows ComfyUI down) |
 | `IMAGE_DIR` | where PNGs are saved, served under `/media/` (default `./data/images`) |
 | `MOCK_IMAGES` | `true` = skip ComfyUI and write a placeholder PNG after ~3 s, no GPU needed |
 
