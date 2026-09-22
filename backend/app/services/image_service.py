@@ -158,6 +158,18 @@ def build_workflow(
     return workflow
 
 
+def negative_extra_for(style_negative: str, explicit: bool) -> str:
+    """Negative-prompt additions for a story: the style's negative tags, plus
+    an `nsfw` guard for every story that is not explicit 18+. The guard used to
+    live in the workflow file's node 7; keeping it here makes the age rating
+    govern images even if a custom workflow drops it. Only 18+ stories with
+    explicit sexual content enabled skip it."""
+    parts = [style_negative.strip()] if style_negative.strip() else []
+    if not explicit:
+        parts.append("nsfw")
+    return ", ".join(parts)
+
+
 def _client(settings: Settings) -> httpx.Client:
     return httpx.Client(base_url=settings.comfyui_url, timeout=30.0)
 
@@ -248,6 +260,45 @@ def upload_reference_image(client: httpx.Client, data: bytes, filename: str) -> 
     return str(name)
 
 
+# Node ids used by the auto-injected img2img reference chain:
+# LoadImage -> ImageScale (to the scene resolution) -> VAEEncode -> the first
+# sampler's latent input. High ids so they never collide with workflow nodes.
+REFERENCE_LOAD_NODE = "90"
+REFERENCE_SCALE_NODE = "91"
+REFERENCE_VAE_NODE = "92"
+
+
+def _inject_img2img_chain(workflow: dict[str, Any], reference_name: str, settings: Settings) -> None:
+    """Wire a reference portrait into the first sampler as an img2img latent.
+
+    The workflow file itself stays txt2img (latent from EmptyLatentImage), so
+    generations without a usable reference are completely unaffected; only when
+    a reference is actually applied do we inject the chain and rewire. The
+    reference is center-cropped/scaled to the EmptyLatentImage resolution so
+    the latent size matches what the workflow was built for.
+    """
+    latent = workflow.get("5", {}).get("inputs", {})
+    width = int(latent.get("width", 1344))
+    height = int(latent.get("height", 768))
+    workflow[REFERENCE_LOAD_NODE] = {"class_type": "LoadImage", "inputs": {"image": reference_name}}
+    workflow[REFERENCE_SCALE_NODE] = {
+        "class_type": "ImageScale",
+        "inputs": {
+            "upscale_method": "bicubic",
+            "width": width,
+            "height": height,
+            "crop": "center",
+            "image": [REFERENCE_LOAD_NODE, 0],
+        },
+    }
+    workflow[REFERENCE_VAE_NODE] = {
+        "class_type": "VAEEncode",
+        "inputs": {"pixels": [REFERENCE_SCALE_NODE, 0], "vae": ["4", 2]},
+    }
+    workflow["3"]["inputs"]["latent_image"] = [REFERENCE_VAE_NODE, 0]
+    workflow["3"]["inputs"]["denoise"] = settings.image_reference_denoise
+
+
 def apply_reference_images(
     workflow: dict[str, Any],
     uploaded_names: list[str],
@@ -258,7 +309,9 @@ def apply_reference_images(
     One node per reference slot; extra references are dropped, missing or
     non-LoadImage nodes are skipped with a warning (generation continues
     without a reference rather than failing the job). In "img2img" mode the
-    first sampler's denoise is lowered so the reference drives the look.
+    first reference additionally feeds the first sampler through the injected
+    LoadImage/ImageScale/VAEEncode chain and the sampler's denoise is lowered,
+    so the reference drives the look — no hand-edited workflow nodes needed.
     """
     applied = 0
     for node_id, name in zip(reference_node_ids(settings), uploaded_names):
@@ -268,10 +321,11 @@ def apply_reference_images(
             continue
         node.setdefault("inputs", {})["image"] = name
         applied += 1
-    if applied and settings.image_reference_mode == "img2img":
-        workflow["3"]["inputs"]["denoise"] = settings.image_reference_denoise
+    if uploaded_names and settings.image_reference_mode == "img2img":
+        _inject_img2img_chain(workflow, uploaded_names[0], settings)
+        applied = max(applied, 1)
     if len(uploaded_names) > applied:
-        logger.info("dropped %d reference image(s): not enough LoadImage nodes", len(uploaded_names) - applied)
+        logger.info("dropped %d reference image(s): not enough reference slots", len(uploaded_names) - applied)
     return applied
 
 
@@ -280,6 +334,8 @@ def _reference_images_for_turn(db: Any, turn: Turn, settings: Settings) -> list[
     if settings.image_reference_mode == "off":
         return []
     node_count = len(reference_node_ids(settings))
+    if settings.image_reference_mode == "img2img":
+        node_count = max(node_count, 1)  # the auto-injected chain is always one slot
     if node_count == 0:
         return []
     characters = db.query(Character).filter(
@@ -455,7 +511,7 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                         style_tags=style_pos, explicit=explicit,
                     ),
                     filename_prefix=f"story_{turn.story_id}_{turn.id}",
-                    negative_extra=style_neg,
+                    negative_extra=negative_extra_for(style_neg, explicit),
                 )
                 references = _reference_images_for_turn(db, turn, settings)
                 with _client(settings) as client:
@@ -529,7 +585,7 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                         style_tags=style_pos, explicit=explicit,
                     ),
                     filename_prefix=f"story_{character.story_id}_char_{character.id}",
-                    negative_extra=style_neg,
+                    negative_extra=negative_extra_for(style_neg, explicit),
                 )
                 with _client(settings) as client:
                     prompt_id = submit_job(client, workflow)

@@ -32,3 +32,9 @@ The AI provider was switched from Anthropic Claude to Google Gemini (user reques
 ## 2026-09-22: Cancel stale ComfyUI jobs on timeout
 
 - Found by a live handoff test (Ollama qwen3-8b resident on the same 8 GB GPU as ComfyUI): image jobs exceeded `IMAGE_TIMEOUT_SECONDS` and were marked `failed`, but ComfyUI kept running them; later jobs queued behind the stale backlog and timed out too — the pipeline never recovered on its own. `wait_for_result` now calls `cancel_job` on timeout: delete the prompt from the ComfyUI queue, and `/interrupt` only when it is the currently running job. Best-effort, never raises.
+
+## 2026-09-22: New workflows + portrait-driven scenes
+
+- Replaced `comfy_workflows/wide.json` and `portrait.json` with the user's detailer workflows (waiIllustriousSDXL v170 + NOOB detailer, facial-expression and Expressive_H LoRAs, stronger negative prompt; wide upscales latents 1.5x then ImageScale to 1920x1080). Node-map convention unchanged (6/7 prompts, 3/13 samplers, 9 save).
+- `IMAGE_REFERENCE_MODE=img2img` now needs no hand-added workflow nodes: the backend injects LoadImage->ImageScale->VAEEncode (ids 90/91/92) and rewires the first sampler's latent only when a reference portrait is actually applied, so plain txt2img runs are untouched. Likeness comes from the portrait picture, not only appearance tags.
+- The new workflow negative dropped `nsfw`; `negative_extra_for` re-appends it for every story that is not explicit 18+, so the age rating keeps governing images regardless of the workflow file.

@@ -55,10 +55,32 @@ def test_apply_reference_images_fills_load_image_nodes() -> None:
 
 
 def test_apply_reference_images_missing_node_is_skipped() -> None:
-    workflow = build_workflow("wide", "p", "x")  # no LoadImage nodes at all
+    workflow = build_workflow("wide", "p", "x")  # no hand-added LoadImage nodes
     applied = apply_reference_images(workflow, ["ref_1.png"], _settings())
+    # img2img mode does not need configured nodes: it injects its own chain
+    assert applied == 1
+    assert workflow["90"] == {"class_type": "LoadImage", "inputs": {"image": "ref_1.png"}}
+    assert workflow["91"]["class_type"] == "ImageScale"
+    assert workflow["91"]["inputs"]["image"] == ["90", 0]
+    # the reference is scaled to the EmptyLatentImage (scene) resolution
+    assert workflow["91"]["inputs"]["width"] == workflow["5"]["inputs"]["width"]
+    assert workflow["91"]["inputs"]["height"] == workflow["5"]["inputs"]["height"]
+    assert workflow["92"] == {
+        "class_type": "VAEEncode",
+        "inputs": {"pixels": ["91", 0], "vae": ["4", 2]},
+    }
+    # the first sampler now runs img2img off the reference at lowered denoise
+    assert workflow["3"]["inputs"]["latent_image"] == ["92", 0]
+    assert workflow["3"]["inputs"]["denoise"] == 0.55
+
+
+def test_apply_reference_images_none_uploaded_keeps_txt2img() -> None:
+    workflow = build_workflow("wide", "p", "x")
+    applied = apply_reference_images(workflow, [], _settings())
     assert applied == 0
-    assert workflow["3"]["inputs"]["denoise"] == 1  # untouched without a reference
+    assert "90" not in workflow  # no chain injected
+    assert workflow["3"]["inputs"]["latent_image"] == ["5", 0]
+    assert workflow["3"]["inputs"]["denoise"] == 1
 
 
 def test_apply_reference_images_off_mode_keeps_denoise() -> None:
@@ -102,9 +124,14 @@ def test_reference_images_for_turn_collects_scene_portraits(db_session: Session,
     off = _settings(image_reference_mode="off", image_dir=str(tmp_path))
     assert image_service._reference_images_for_turn(db_session, turn, off) == []
 
-    # no configured nodes -> no references
+    # no configured nodes: img2img still offers its auto-injected slot,
+    # other modes collect nothing
     none_configured = _settings(image_reference_nodes="", image_dir=str(tmp_path))
-    assert image_service._reference_images_for_turn(db_session, turn, none_configured) == []
+    assert len(image_service._reference_images_for_turn(db_session, turn, none_configured)) == 1
+    none_custom = _settings(
+        image_reference_mode="ipadapter", image_reference_nodes="", image_dir=str(tmp_path)
+    )
+    assert image_service._reference_images_for_turn(db_session, turn, none_custom) == []
 
     # one slot -> one reference
     one_slot = _settings(image_reference_nodes="20", image_dir=str(tmp_path))

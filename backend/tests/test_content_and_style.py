@@ -197,3 +197,22 @@ def test_setup_options_serve_new_lists(client: TestClient) -> None:
     assert "Disco Elysium" in options["narrator_styles"]
     assert options["max_genres"] == 5
 
+
+def test_negative_extra_keeps_nsfw_guard_below_explicit_18() -> None:
+    # style negatives pass through; non-explicit stories always get nsfw appended
+    assert image_service.negative_extra_for("realistic, photorealistic", False) == (
+        "realistic, photorealistic, nsfw"
+    )
+    assert image_service.negative_extra_for("", False) == "nsfw"
+    # only explicit 18+ stories drop the guard
+    assert image_service.negative_extra_for("anime, cartoon", True) == "anime, cartoon"
+    assert image_service.negative_extra_for("", True) == ""
+
+
+def test_built_workflow_negative_carries_nsfw_guard() -> None:
+    workflow = image_service.build_workflow(
+        "wide", "p", "x", seed=1,
+        negative_extra=image_service.negative_extra_for("", explicit=False),
+    )
+    assert workflow["7"]["inputs"]["text"].endswith("nsfw")
+

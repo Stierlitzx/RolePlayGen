@@ -5,24 +5,48 @@
       "ckpt_name": "waiIllustriousSDXL_v170.safetensors"
     }
   },
+  "15": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "NOOB_vp1_detailer_by_volnovik_v1.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8,
+      "model": ["4", 0],
+      "clip": ["4", 1]
+    }
+  },
+  "18": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "facial expression style v3.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8,
+      "model": ["15", 0],
+      "clip": ["15", 1]
+    }
+  },
+  "16": {
+    "class_type": "LoraLoader",
+    "inputs": {
+      "lora_name": "Expressive_H-000001.safetensors",
+      "strength_model": 0.8,
+      "strength_clip": 0.8,
+      "model": ["18", 0],
+      "clip": ["18", 1]
+    }
+  },
   "6": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "masterpiece, best quality, amazing quality, general, 1girl, solo, adult, detective, beige trench coat, fedora, standing, night city street, rain, neon signs, reflections on wet pavement, vibrant colors, wide shot, from side",
-      "clip": [
-        "15",
-        1
-      ]
+      "text": "masterpiece, best quality, amazing quality, general",
+      "clip": ["16", 1]
     }
   },
   "7": {
     "class_type": "CLIPTextEncode",
     "inputs": {
-      "text": "bad quality, worst quality, worst detail, sketch, censor, nsfw, watermark, signature, text, huge breasts",
-      "clip": [
-        "15",
-        1
-      ]
+      "text": "bad quality, worst quality, worst detail, sketch, censor, watermark, signature, text, censor, low quality, blurry, jpeg artifacts, ugly, deformed, extra fingers, bad anatomy, leather, shiny plactic, bad hands, text, watermark, signature, patreon username, patreon logo, bar_censor",
+      "clip": ["16", 1]
     }
   },
   "5": {
@@ -42,33 +66,18 @@
       "sampler_name": "euler_ancestral",
       "scheduler": "normal",
       "denoise": 1,
-      "model": [
-        "15",
-        0
-      ],
-      "positive": [
-        "6",
-        0
-      ],
-      "negative": [
-        "7",
-        0
-      ],
-      "latent_image": [
-        "5",
-        0
-      ]
+      "model": ["16", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["5", 0]
     }
   },
   "12": {
     "class_type": "LatentUpscaleBy",
     "inputs": {
-      "samples": [
-        "3",
-        0
-      ],
       "upscale_method": "bislerp",
-      "scale_by": 1.5
+      "scale_by": 1.5,
+      "samples": ["3", 0]
     }
   },
   "13": {
@@ -80,74 +89,34 @@
       "sampler_name": "euler_ancestral",
       "scheduler": "normal",
       "denoise": 0.45,
-      "model": [
-        "15",
-        0
-      ],
-      "positive": [
-        "6",
-        0
-      ],
-      "negative": [
-        "7",
-        0
-      ],
-      "latent_image": [
-        "12",
-        0
-      ]
+      "model": ["16", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["12", 0]
     }
   },
   "8": {
     "class_type": "VAEDecode",
     "inputs": {
-      "samples": [
-        "13",
-        0
-      ],
-      "vae": [
-        "4",
-        2
-      ]
+      "samples": ["13", 0],
+      "vae": ["4", 2]
     }
   },
   "10": {
     "class_type": "ImageScale",
     "inputs": {
-      "image": [
-        "8",
-        0
-      ],
       "upscale_method": "bicubic",
       "width": 1920,
       "height": 1080,
-      "crop": "center"
+      "crop": "center",
+      "image": ["8", 0]
     }
   },
   "9": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "detailer_169",
-      "images": [
-        "10",
-        0
-      ]
-    }
-  },
-  "15": {
-    "class_type": "LoraLoader",
-    "inputs": {
-      "model": [
-        "4",
-        0
-      ],
-      "clip": [
-        "4",
-        1
-      ],
-      "lora_name": "NOOB_vp1_detailer_by_volnovik_v1.safetensors",
-      "strength_model": 0.8,
-      "strength_clip": 0.8
+      "filename_prefix": "story",
+      "images": ["10", 0]
     }
   }
 }
