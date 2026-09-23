@@ -100,6 +100,6 @@ Root cause of "every story is the same": the app ran with `MOCK_LLM=true` — on
 - Story creation writes to the real `story.db` — smoke-test with `DATABASE_URL=sqlite:///./smoke.db` and delete it after.
 - Full checks: `cd backend && pytest` (123 tests) and `cd frontend && npx vitest run && npx tsc --noEmit` (22 tests).
 
-## Feature registry — do NOT silently drop in future sessions
+## Feature registry
 
-Per-story text-provider picker (gemini/local, stored as `settings.llm_provider`) · per-story Gemini model picker · age rating + 18+ sub-options (`explicit_sexual`, `graphic_violence`) · image style picker · narrator style picker · `intro_exposition` (lore prologue vs in-medias-res) · hero gender + freeform hero appearance mirrored into `appearance_tags` · character tracking with portrait history (update/revert) · `characters_in_scene` tag splicing · img2img portrait reference mode (`IMAGE_REFERENCE_MODE`) · heal-first image retry · ComfyUI stale-job cancellation · mock narrator rotation · clothing guard · image fallbacks (format + prompt) · redo last turn (`regenerate-last`) · VRAM conductor (`GPU_VRAM_CONDUCTOR`). Removing any of these is a regression — several were re-added after being lost in earlier sessions.
+The feature registry now lives in `docs/FEATURES.md` — one row per feature with status, code location and tests; removing a `done` feature without an entry here is a regression.
