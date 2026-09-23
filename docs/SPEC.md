@@ -14,6 +14,10 @@ Story. The main screen. A title and an exit button to the home screen at the top
 
 Ending. When `is_ending` is `true`, show the story summary and the buttons "New story" and "Home".
 
+## Story management
+
+While a story has only its opening turn, the story screen offers "Change beginning" (edit the setup, backed by `PATCH /api/stories/{id}`) and "Regenerate opening" (`regenerate-start`, rerolls the prologue). After that, the header shows "Redo last turn" (`regenerate-last`): the last turn is deleted and its stored player input replayed — this works on finished stories too, so a bad ending can be redone. Characters introduced on the deleted turn are removed with it, portrait updates from it are rolled back, and its image file is deleted best-effort. The narrator style can be changed mid-story from the story screen header and applies from the next turn.
+
 ## Setup parameters
 
 Setting: a list of presets (medieval kingdom, space station, modern city, post-apocalypse, wizard school, Wild West, underwater world, cyberpunk metropolis, high fantasy epic, noir detective city, horror mansion, historical drama, superhero city, fairy tale kingdom, pirate seas, dystopia, steampunk, wuxia, survival island, cosmic horror, slice-of-life school) and a "Custom" option with a multi-line text field (up to 1000 characters). A "Random" option is available and picks uniformly among all presets except Custom.
@@ -137,6 +141,8 @@ Every image in the app — scene illustrations, inline introduction portraits in
 
 Every story and every turn is saved to SQLite right after the response arrives. Closing the tab must not lose progress. An unfinished story is restored at exactly the turn where it stopped. Deleting a story also recursively deletes its image folder (`IMAGE_DIR/{story_id}/`, scenes and portraits); the deletion is verified to stay inside `IMAGE_DIR`, and filesystem failures are logged but never turn a successful database delete into an error.
 
-## Out of scope for the first version
+## Out of scope
 
-Word-by-word text streaming, voice, multiple users, story export, mobile adaptation beyond the basics. (Scene illustrations were added later and are described above.)
+Word-by-word text streaming, voice, multiple users, story export, mobile adaptation beyond the basics.
+
+Non-goals: this is a guided interactive story, not a general chat client — lorebooks, text-to-speech, many more provider types and mini-games are not planned unless they are added to `docs/FEATURES.md` first.

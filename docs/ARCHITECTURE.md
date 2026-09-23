@@ -2,19 +2,21 @@
 
 ## Overview
 
-The React frontend talks to the backend over HTTP with JSON. The backend stores data in SQLite and calls the Google Gemini API (see DECISIONS.md). In development the frontend runs on Vite (port 5173) and proxies `/api` to the backend (port 8000).
+The React frontend talks to the backend over HTTP with JSON. The backend stores data in SQLite and calls a text model — the Google Gemini API or any OpenAI-compatible endpoint (Ollama, LM Studio, llama.cpp, OpenRouter…), switchable per story (see DECISIONS.md). In development the frontend runs on Vite (port 5173) and proxies `/api` to the backend (port 8000).
 
 ## Data models
 
 Story: `id`, `title`, `settings` (JSON with the chosen parameters — including `age_rating`, `explicit_sexual`, `graphic_violence`, `image_style` and `narrator_style`, all absent for stories created before those fields existed, which preserves their old behavior), `status` (`active` or `finished`), `max_turns` (nullable), `created_at`, `updated_at`.
 
-Turn: `id`, `story_id`, `index` (zero based), `player_input_type` (`option`, `custom` or `start`), `player_input_text`, `narration`, `choice` (JSON, nullable at the ending), `state` (JSON), `is_ending`, `image_status` (`none`, `queued`, `generating`, `done`, `failed`; default `none`), `image_format` (`portrait` or `wide`, nullable), `image_prompt` (nullable), `image_path` (nullable, relative to `IMAGE_DIR`), `image_error` (nullable), `created_at`.
+Turn: `id`, `story_id`, `index` (zero based), `player_input_type` (`option`, `custom` or `start`), `player_input_text`, `narration`, `choice` (JSON, nullable at the ending), `state` (JSON), `is_ending`, `image_status` (`none`, `queued`, `generating`, `done`, `failed`; default `none`), `image_format` (`portrait` or `wide`, nullable), `image_prompt` (nullable), `image_path` (nullable, relative to `IMAGE_DIR`), `image_error` (nullable), `characters_in_scene` (JSON list of names, nullable; `__hero__` is the player character), `created_at`.
 
 The first turn is created automatically when the story is created and has type `start`. The image columns were added to existing databases with a small startup migration (`ALTER TABLE` for any missing column), so old stories keep working.
 
 Character: `id`, `story_id`, `name`, `is_hero`, `role`, `relationship` (to the player character), `description`, `appearance_tags`, `portrait_history` (JSON list of look versions `{appearance_tags, pose, expression, portrait_path, turn_id}`; the latest entry is the current look), `first_seen_turn_id`, `portrait_status` (same states as `image_status`; default `none`), `portrait_path`, `portrait_error`, `created_at`. One row per story and name; the hero is stored as a character row with `is_hero=true`. The table is created by the same startup migration mechanism, so existing databases upgrade in place, and rows without `portrait_history` are treated as single-version characters.
 
 ## API
+
+`GET /api/health` returns `{"status": "ok"}`.
 
 `GET /api/setup-options` returns the lists of settings, genres, tones, lengths, languages and cultures, plus `age_ratings` (with `default_age_rating`), `adult_genres`, `image_styles` (with `default_image_style`), `narrator_styles` (with `default_narrator_style`), `max_genres` (5) and the model list — the single source of truth for the setup screen, so lists are extended on the backend only. It also serves both text providers side by side (`default_provider`, `gemini_models`, `gemini_configured`, `local_model`, `local_configured`) so the player picks Gemini vs the local model per story; the choice is stored in the story settings as `llm_provider`. The image-style tag mappings live in backend config next to the option lists.
 
@@ -66,11 +68,11 @@ Player input is also checked in `story_engine`: `option_id` must exist in the la
 
 ## Prompts
 
-Prompt files live in `backend/prompts/` as text files and are read at startup. The minimum set for the first version is the narrator system prompt (role, rules, turn contract) and a turn message template. Write a short working version to begin with. More detailed narrator instructions will be added separately, so structure it so the prompt can be replaced by files without code changes.
+Prompt files live in `backend/app/prompts/` as text files (the narrator system prompt and the turn message template) and are loaded by `story_engine.load_prompt`, so they can be replaced without code changes.
 
 ## Configuration
 
-Through `.env`: `GEMINI_API_KEY`, `MODEL_NAME`, `DATABASE_URL` (default `sqlite:///./story.db`), `MAX_TOKENS` (default 4000), `MOCK_LLM`. Text provider: `LLM_PROVIDER` (`gemini` or `openai`/`local`), `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`. Images: `IMAGE_GENERATION_ENABLED`, `COMFYUI_URL` (default `http://127.0.0.1:8188`), `IMAGE_TIMEOUT_SECONDS` (default 300), `IMAGE_DIR` (default `./data/images`), `MOCK_IMAGES`, `IMAGE_REFERENCE_MODE` (`off`/`img2img`). Read in `config.py` with Pydantic Settings.
+Through `.env`: `GEMINI_API_KEY`, `MODEL_NAME`, `DATABASE_URL` (default `sqlite:///./story.db`), `MAX_TOKENS` (default 4000), `MOCK_LLM`. Text provider: `LLM_PROVIDER` (`gemini` or `openai`/`local`), `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`. Images: `IMAGE_GENERATION_ENABLED`, `COMFYUI_URL` (default `http://127.0.0.1:8188`), `IMAGE_TIMEOUT_SECONDS` (default 300), `IMAGE_DIR` (default `./data/images`), `MOCK_IMAGES`, `IMAGE_REFERENCE_MODE` (`off`/`img2img`), `IMAGE_REFERENCE_NODES` (comma-separated LoadImage node ids for hand-built workflows), `IMAGE_REFERENCE_DENOISE` (default 0.75), `GPU_VRAM_CONDUCTOR` (default `false`; unload the Ollama model before each image job and free ComfyUI's cache after it, for one shared GPU). Read in `config.py` with Pydantic Settings; every variable is documented in `.env.example` (checked by `backend/tests/test_docs_consistency.py`).
 
 ## Frontend
 

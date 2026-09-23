@@ -1,3 +1,6 @@
+> **Historical document.** This was the original nine-step build order (formerly `TASKS.md`), completed long ago; it still mentions the Anthropic API, which was replaced by Google Gemini (see `docs/DECISIONS.md`). It is kept for history only — do not work through it. What is planned now lives in `docs/BACKLOG.md`; what exists lives in `docs/FEATURES.md`.
+
+
 # Work plan
 
 Do the tasks in order. After each one run its check and report the result briefly.

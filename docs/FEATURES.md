@@ -20,7 +20,7 @@ One row per feature. This file is the memory of the project across sessions.
 | OpenAI-compatible provider (Ollama, LM Studio, llama.cpp, OpenRouter…) | done | `llm.py` (`_call_openai`), env `LLM_PROVIDER`, `OPENAI_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL` | `test_llm.py` | `response_format={"type": "json_object"}`; no new dependency |
 | Per-story provider picker (Gemini vs local) | done | story settings `llm_provider`; `story_engine._provider_for_story`/`_effective_provider`; setup-options fields `default_provider`, `gemini_models`, `local_model`…; `SetupPage` | `test_api.py`, `test_story_engine.py` | Stories without the field follow `LLM_PROVIDER`; the 503 check applies to the story's actual provider |
 | Per-story Gemini model picker | done | `setup_options.MODEL_OPTIONS`, story settings `model`, setup-options `gemini_models`/`default_gemini_model` | `test_api.py`, `test_setup_options.py` | Legacy `models`/`default_model`/`ai_configured` fields still follow `LLM_PROVIDER` |
-| Faithful hero tag conversion (dedicated LLM call) | done | `llm.py` `convert_hero_appearance_tags` | `test_llm.py` | Lossless danbooru-tag conversion of the freeform hero description; falls back to narrator tags |
+| Faithful hero tag conversion (dedicated LLM call) | done | `llm.py` `faithful_appearance_tags` | `test_llm.py` | Lossless danbooru-tag conversion of the freeform hero description; falls back to narrator tags |
 
 ## Setup screen
 
@@ -127,7 +127,7 @@ One row per feature. This file is the memory of the project across sessions.
 | Inline introduction portraits in the feed | done | `first_seen_turn_id`, `IntroducedCharacters` component | `IntroducedCharacters.test.tsx` | |
 
 | Hero gender picker | done | `HERO_GENDER_OPTIONS`, `GENDER_TAGS`, story settings `hero_gender` | `test_content_and_style.py`, `test_image_prompts.py` | Maps to `1girl`/`1boy` image tags; shown in the turn prompt |
-| Freeform hero appearance mirrored into `appearance_tags` | done | `StoryCreate.hero_appearance`, `llm.convert_hero_appearance_tags`, mock `_mock_hero_tags` | `test_llm.py`, `test_image_prompts.py` | The narrator is ordered to mirror the description exactly |
+| Freeform hero appearance mirrored into `appearance_tags` | done | `StoryCreate.hero_appearance`, `llm.faithful_appearance_tags`, mock `_mock_hero_tags` | `test_llm.py`, `test_image_prompts.py` | The narrator is ordered to mirror the description exactly |
 | Story length (short/medium/long/custom 50-500) | done | `LENGTH_OPTIONS`, `story_engine.max_turns_for_length` | `test_story_engine.py` | |
 | Story language (Russian/English/Kazakh) | done | `LANGUAGE_OPTIONS`, `StoryCreate.language` | `test_llm.py` (mock honors language) | |
 | Setting culture + naming-culture override | done | `CULTURE_OPTIONS`, story settings `setting_culture`/`naming_culture` | `test_setup_options.py` | "Match story language" default keeps old behavior |

@@ -31,7 +31,7 @@ The AI provider was switched from Anthropic Claude to Google Gemini (user reques
 
 ## 2026-09-22: Cancel stale ComfyUI jobs on timeout
 
-- Found by a live handoff test (Ollama qwen3-8b resident on the same 8 GB GPU as ComfyUI): image jobs exceeded `IMAGE_TIMEOUT_SECONDS` and were marked `failed`, but ComfyUI kept running them; later jobs queued behind the stale backlog and timed out too � the pipeline never recovered on its own. `wait_for_result` now calls `cancel_job` on timeout: delete the prompt from the ComfyUI queue, and `/interrupt` only when it is the currently running job. Best-effort, never raises.
+- Found by a live handoff test (Ollama qwen3-8b resident on the same 8 GB GPU as ComfyUI): image jobs exceeded `IMAGE_TIMEOUT_SECONDS` and were marked `failed`, but ComfyUI kept running them; later jobs queued behind the stale backlog and timed out too — the pipeline never recovered on its own. `wait_for_result` now calls `cancel_job` on timeout: delete the prompt from the ComfyUI queue, and `/interrupt` only when it is the currently running job. Best-effort, never raises.
 
 ## 2026-09-22: New workflows + portrait-driven scenes
 
@@ -91,14 +91,6 @@ Root cause of "every story is the same": the app ran with `MOCK_LLM=true` — on
 
 - Symptom: a turn written by the local model (Ollama, ~5 GB resident) left no VRAM for ComfyUI, so illustrations failed or stalled on an 8 GB card. New opt-in `GPU_VRAM_CONDUCTOR=true` (config `gpu_vram_conductor`, enabled in the user's `.env` since their Ollama and ComfyUI share one GPU): before every real image job the worker asks the text server to unload the model (`POST {OPENAI_BASE_URL minus /v1}/api/generate` with `keep_alive: 0`), and after the job (success or failure) asks ComfyUI to free its cache (`POST /free` with `unload_models + free_memory`). Both are best-effort with 10 s timeouts — a down or non-Ollama server is logged and ignored, the job proceeds. Skipped entirely for `MOCK_IMAGES=true`. Cost: the text model reloads on the next turn (~10-30 s). Known limitation: a text request landing DURING an image job still reloads Ollama alongside ComfyUI — no hard mutex, by design (keeps text responsive; ComfyUI's smart memory usually absorbs the overlap).
 - Also this session: `Redo last turn` feature (`regenerate-last`), and `regenerate_start`'s off-by-one turn index fix (deleted rows must leave the in-memory collection before regenerating).
-
-## Operational gotchas (read before touching anything)
-
-- **`uvicorn --reload` watches only `.py` files — after editing `.env` the backend MUST be restarted manually.** "Gemini is not configured" with a key in `.env` = stale process. Also the project lives in OneDrive, where WatchFiles reloads are unreliable — restart after code changes too (the last server runs WITHOUT `--reload` for this reason).
-- Run the backend from `backend/` (`Settings` reads `.env` relative to CWD): `cd backend && .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000`.
-- `backend/.env` is gitignored; `backend/tests/conftest.py` pins `OPENAI_MODEL`/`LLM_PROVIDER`/`MOCK_LLM` so tests never inherit the developer's `.env` — keep it that way.
-- Story creation writes to the real `story.db` — smoke-test with `DATABASE_URL=sqlite:///./smoke.db` and delete it after.
-- Full checks: `cd backend && pytest` (123 tests) and `cd frontend && npx vitest run && npx tsc --noEmit` (22 tests).
 
 ## Feature registry
 

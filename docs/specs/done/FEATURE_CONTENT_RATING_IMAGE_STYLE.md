@@ -1,3 +1,6 @@
+> **Historical document.** This task spec is fully implemented and kept for history only. The current truth is in `docs/FEATURES.md` (feature status, code locations) and `docs/ARCHITECTURE.md` (how it works). The specs it references (`IMAGE_FEATURE.md`, `FEATURE_SETUP_CHARACTERS.md`) predate the repository's git history and are not archived here.
+
+
 # Task: longer setup fields, age rating with 18+ sub-options, image style picker, in-app lightbox, image cleanup on story delete
 
 Read this whole file before changing anything. Also read `CLAUDE.md`, `SPEC.md`, `ARCHITECTURE.md` and the previously implemented specs (`IMAGE_FEATURE.md`, `FEATURE_SETUP_CHARACTERS.md`) before touching code — this feature builds on all of them. Names of modules/components below are suggestions: adapt to what already exists, but keep the described behavior.
