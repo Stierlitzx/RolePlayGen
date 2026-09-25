@@ -116,12 +116,13 @@ ADULT_GENRE_OPTIONS = ["Hentai", "Erotica", "Slasher / gore", "Extreme horror"]
 # Qwen-Image-2.1 was trained on natural captions, and a single word like
 # "anime style" loses against a long photographic description (see DECISIONS
 # 2026-09-26). No negative tags: the workflow runs at cfg=1 and has no
-# negative-prompt node.
+# negative-prompt node. NB: no "flat"/"muted"/"soft colours" — those words are
+# what made the portraits look washed out and grey.
 IMAGE_STYLE_TAGS = {
     "Anime (default)": {
         "positive": (
-            "a modern anime illustration, clean line art, cel shading, flat colour "
-            "with soft shading, expressive eyes"
+            "a modern anime illustration in full colour, clean line art, bold cel "
+            "shading, rich saturated colours, bright lighting, expressive eyes"
         ),
         "negative": "",
     },

@@ -311,7 +311,7 @@ def test_reference_images_for_turn_resolves_loose_scene_name(db_session: Session
     assert [name for name, _ in references] == [f"ref_{stranger.id}.png"]
     # ... and the appearance-tag splicing resolves the same loose name.
     _, npc_tags = image_service._scene_appearance_tags(db_session, turn)
-    assert npc_tags == ["1boy, black coat, adult"]
+    assert npc_tags == ["Black coat"]  # danbooru boilerplate is dropped by clean_phrase
 
 def _portrait_flow_handler(uploaded: list[str], submitted: list[dict]):
     import json as _json
@@ -373,7 +373,7 @@ def test_portrait_regeneration_uses_previous_portrait_as_reference(
     # image_1 and the sampler starts from its encoded latent.
     assert submitted[0]["6"]["inputs"]["images"] == [["100", 0]]
     assert submitted[0]["100"]["inputs"]["image"] == "ref_x.png"  # what ComfyUI stored it as
-    assert submitted[0]["9"]["inputs"]["switch"] is False
+    assert submitted[0]["9"]["inputs"]["switch"] is True  # a portrait card is 2:3, not the photo's shape
     assert submitted[0]["8"]["inputs"]["latent_image"] == ["9", 0]
     assert "<image1>" in submitted[0]["6"]["inputs"]["prompt"]
     assert character.portrait_status == "done"

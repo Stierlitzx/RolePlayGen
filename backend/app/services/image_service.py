@@ -244,14 +244,35 @@ class ImageGenerationError(RuntimeError):
     pass
 
 
+# Standalone danbooru boilerplate that carries no information once the
+# description is prose: the picture model is told who is in the frame by the
+# caption itself, and "solo" actively contradicts a frame with two people.
+_BOILERPLATE_TAGS = {"solo", "adult", "other", "1other", "look_at_viewer"}
+_PERSON_COUNT_TAG = re.compile(r"^\d+\s*(girls?|boys?|others?)$", re.IGNORECASE)
+
+
 def clean_phrase(text: str) -> str:
-    """Tidy a phrase the narrator wrote: one line, no dangling commas, no
-    quality boilerplate (the backend writes the style and the rating itself)."""
+    """Tidy a phrase the narrator wrote, and de-tag the ones stored earlier.
+
+    Two jobs. New text is plain English and only needs tidying. Text stored
+    BEFORE the caption switch is a danbooru tag list, and passing it through
+    unchanged is what kept `1girl, solo, adult, hourglass_figure…` in the
+    prompt: underscores become words, the person-count/gender boilerplate is
+    dropped (the caption states who is in the frame), and what is left reads as
+    a phrase. Quality boilerplate is dropped too — the backend writes the style
+    and the rating itself.
+    """
     flat = " ".join((text or "").split()).strip(" ,.;")
     if not flat:
         return ""
-    parts = [part.strip() for part in flat.split(",")]
-    kept = [part for part in parts if part and part.lower() not in QUALITY_TOKENS_SET]
+    kept: list[str] = []
+    for raw in flat.split(","):
+        tag = raw.strip().replace("_", " ").strip(" .;")
+        if not tag or tag.lower() in QUALITY_TOKENS_SET:
+            continue
+        if tag.lower() in _BOILERPLATE_TAGS or _PERSON_COUNT_TAG.match(tag):
+            continue
+        kept.append(tag)
     if not kept:
         return ""
     sentence = ", ".join(kept)
@@ -1798,9 +1819,11 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                                 client, reference_bytes, f"portrait_base_{character.id}.png"
                             ),
                             steps=settings.image_steps,
-                            # A portrait keeps the shape of the picture it is
-                            # edited from, which is what a portrait card needs.
-                            custom_size=False,
+                            # A portrait card is 2:3. Letting the canvas follow
+                            # the uploaded photo is what produced square (and
+                            # letterboxed) portraits, so the workflow's own 2:3
+                            # latent is used instead.
+                            custom_size=True,
                             seed=settings.image_seed,
                         )
                         build_mode = f"edit (image_1 = {source_label})"

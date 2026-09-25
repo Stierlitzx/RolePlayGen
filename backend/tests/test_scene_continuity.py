@@ -212,7 +212,7 @@ def test_process_turn_image_negates_the_old_location(
     # previous_scene_negative above) but intentionally not written anywhere.
     assert image_service.previous_scene_negative(db_session, turn, turn.image_prompt) != ""
     # ... while the new location stays in the positive prompt
-    assert "wooden hut interior" in submitted[0]["6"]["inputs"]["prompt"]
+    assert "Wooden hut interior" in submitted[0]["6"]["inputs"]["prompt"]
     # ComfyUI output goes into a per-story folder, not one flat list of stories
     assert submitted[0]["10"]["inputs"]["filename_prefix"] == (
         f"roleplaygen/story_{turn.story_id}/scene_{turn.id}"

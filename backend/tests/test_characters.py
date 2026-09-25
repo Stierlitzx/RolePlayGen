@@ -292,17 +292,17 @@ def test_scene_appearance_tags_splicing(db_session: Session) -> None:
     db_session.commit()
 
     hero_tags, tags = image_service._scene_appearance_tags(db_session, turn)
-    assert hero_tags == "1girl, red hair"
-    assert tags == ["1boy, tricorn hat"]  # hero sentinel skipped, scene order kept
+    assert hero_tags == "Red hair"  # danbooru boilerplate is de-tagged for the caption
+    assert tags == ["Tricorn hat"]  # danbooru boilerplate is de-tagged for the caption
 
     prompt = image_service.assemble_positive_prompt("standing, dock", hero_tags, tags)
     # Scene tags lead; spliced appearance anchors follow, hero before the NPC.
-    assert prompt.index("standing, dock") < prompt.index("1girl, red hair") < prompt.index("1boy, tricorn hat")
+    assert prompt.index("standing, dock") < prompt.index("Red hair") < prompt.index("Tricorn hat")
 
     # fallback: no characters_in_scene -> hero only
     turn.characters_in_scene = None
     hero_tags, tags = image_service._scene_appearance_tags(db_session, turn)
-    assert hero_tags == "1girl, red hair"
+    assert hero_tags == "Red hair"  # danbooru boilerplate is de-tagged for the caption
     assert tags == []
 
 

@@ -303,7 +303,7 @@ def test_every_picture_gets_a_log_even_an_old_one(
     assert turn_log and "rebuilt from the stored scene prompt" in turn_log
     assert "anime" in turn_log
     assert f"seed: {settings.image_seed}" in turn_log
-    assert "standing by river" in turn_log
+    assert "Standing by river" in turn_log  # the stored tag list is de-tagged
     assert story.characters[0].portrait_build_log
     assert "rebuilt from the stored look" in story.characters[0].portrait_build_log
 
