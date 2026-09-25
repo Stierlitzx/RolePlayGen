@@ -244,14 +244,94 @@ class ImageGenerationError(RuntimeError):
     pass
 
 
-def sanitize_tags(image_prompt: str, allow_explicit: bool = False) -> list[str]:
-    """Split the narrator's tag string, trim it and drop the backend's own
-    quality/rating words (it writes that prefix itself, so a narrator repeating
-    it would only duplicate it).
+def clean_phrase(text: str) -> str:
+    """Tidy a phrase the narrator wrote: one line, no dangling commas, no
+    quality boilerplate (the backend writes the style and the rating itself)."""
+    flat = " ".join((text or "").split()).strip(" ,.;")
+    if not flat:
+        return ""
+    parts = [part.strip() for part in flat.split(",")]
+    kept = [part for part in parts if part and part.lower() not in QUALITY_TOKENS_SET]
+    if not kept:
+        return ""
+    sentence = ", ".join(kept)
+    return sentence[0].upper() + sentence[1:]
 
-    Content is NOT filtered while filtering is off (see DECISIONS 2026-09-25):
-    a nudity or rating tag the narrator wrote reaches the image model as it is.
-    `allow_explicit` is kept for signature compatibility.
+
+def _clause(text: str) -> str:
+    """One finished clause, so several of them read as a caption."""
+    phrase = clean_phrase(text)
+    if not phrase:
+        return ""
+    return phrase if phrase.endswith((".", "!", "?")) else phrase + "."
+
+
+def assemble_scene_caption(
+    scene: str,
+    hero: str = "",
+    others: list[str] | None = None,
+    style: str = "",
+    world: str = "",
+) -> str:
+    """The whole picture as ONE natural-language caption.
+
+    Qwen-Image-2.1 is trained on natural captions, so the caption is written the
+    way a person would describe the picture: the medium first, then the scene,
+    then who is in it, then where. The danbooru pipeline this replaced fed the
+    model a flat tag list, and the model answered with flat-tag results: a
+    photorealistic picture for an anime story, and two people in one frame drawn
+    in two different styles (each tag block was read as its own description).
+    """
+    parts = [_clause(style), _clause(scene)]
+    who = [part for part in (_clause(hero), *(_clause(text) for text in (others or []))) if part]
+    if who:
+        parts.append("In the frame: " + " ".join(who))
+    if world.strip():
+        parts.append(_clause(world))
+    return " ".join(part for part in parts if part).strip()
+
+
+def assemble_portrait_caption(
+    appearance: str,
+    pose: str = "",
+    expression: str = "",
+    style: str = "",
+    world: str = "",
+    age: str = "",
+) -> str:
+    """A portrait as a caption: the medium, then who this is, then how they stand.
+
+    Written as prose on purpose. The tag version of this prompt ("1girl, elf,
+    long hair, cowboy shot, looking at viewer") is SDXL vocabulary, not
+    Qwen-Image-2.1 vocabulary, and it is what made the portraits flat and the
+    styles drift between characters.
+    """
+    subject_parts = [clean_phrase(appearance or "")]
+    age = " ".join((age or "").split()).strip(" ,.;")
+    if age:
+        subject_parts.append(age[0].lower() + age[1:])
+    subject = ", ".join(part for part in subject_parts if part)
+    if not subject:
+        return " ".join(part for part in (_clause(style), _clause(world)) if part)
+    body = f"a full-body reference portrait of {subject[0].lower() + subject[1:]}"
+    pose_phrase = clean_phrase(pose)
+    if pose_phrase:
+        body += f", {pose_phrase[0].lower() + pose_phrase[1:]}"
+    expression_phrase = clean_phrase(expression)
+    if expression_phrase:
+        body += f", expression: {expression_phrase[0].lower() + expression_phrase[1:]}"
+    parts = [_clause(style), body + "."]
+    if world.strip():
+        parts.append(_clause(world))
+    return " ".join(part for part in parts if part).strip()
+
+
+def sanitize_tags(image_prompt: str, allow_explicit: bool = False) -> list[str]:
+    """Legacy tag splitter.
+
+    The picture pipeline no longer uses it (captions are built by
+    `assemble_scene_caption` / `assemble_portrait_caption`), but the tag helpers
+    below still normalise danbooru text and remain covered by their own tests.
     """
     del allow_explicit  # the rating token is added by _quality_prefix, not here
     tags: list[str] = []
@@ -1300,16 +1380,11 @@ def ensure_build_logs(db: Any, turns: list[Turn], settings: Settings) -> None:
         if not settings.image_generation_enabled:
             continue
         try:
-            hero_tags, character_tags = _scene_appearance_tags(db, turn)
+            hero_phrase, character_phrases = _scene_appearance_phrases(db, turn)
             style_pos, style_neg, explicit, world_tags = _story_image_params(db, turn.story_id)
-            visible = len(turn.characters_in_scene or [])
-            anchored = (1 if hero_tags.strip() else 0) + len(
-                [tags for tags in character_tags if tags.strip()]
-            )
-            prompt = assemble_positive_prompt(
-                turn.image_prompt, hero_tags, character_tags,
-                style_tags=style_pos, explicit=explicit,
-                scene_characters=max(visible, anchored), world_tags=world_tags,
+            prompt = assemble_scene_caption(
+                turn.image_prompt, hero_phrase, character_phrases,
+                style=style_pos, world=world_tags,
             )
             turn.image_build_log = format_build_log(
                 "text to image (rebuilt from the stored scene prompt with today's "
@@ -1362,32 +1437,12 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                 relative = f"{turn.story_id}/{turn.id}.png"
                 _mock_png(Path(settings.image_dir) / relative)
             else:
-                hero_tags, character_tags = _scene_appearance_tags(db, turn)
+                hero_phrase, character_phrases = _scene_appearance_phrases(db, turn)
                 style_pos, style_neg, explicit, world_tags = _story_image_params(db, turn.story_id)
                 negative_extra = negative_extra_for(style_neg, explicit)
-                # How many people share the frame: the narrator's list, and the
-                # appearance anchors that are actually spliced in (the hero is
-                # spliced even when the list forgets them). Two or more means a
-                # two-shot facing each other instead of a solo close-up.
-                visible = len(turn.characters_in_scene or [])
-                anchored = (1 if hero_tags.strip() else 0) + len(
-                    [tags for tags in character_tags if tags.strip()]
-                )
-                scene_characters = max(visible, anchored)
-                group_negative = group_scene_negative(scene_characters)
-                if group_negative:
-                    negative_extra = (
-                        f"{negative_extra}, {group_negative}" if negative_extra else group_negative
-                    )
-                # When the story has moved on, the previous location must not
-                # survive into the picture (see previous_scene_negative).
-                carryover = previous_scene_negative(db, turn, turn.image_prompt)
-                if carryover:
-                    logger.info(
-                        "turn %s: negating the previous scene's place tags: %s",
-                        turn.id, carryover,
-                    )
-                    negative_extra = f"{negative_extra}, {carryover}" if negative_extra else carryover
+                # No group-scene rewrite and no previous-place negative: a caption
+                # simply does not name the place the story left, and the number
+                # of people is stated in words instead of tag arithmetic.
                 # The player's own photo of the hero (uploaded at setup) turns the
                 # scene into an EDIT job: image_1 is that photo, the other people
                 # of the scene follow as image_2..N, and the prompt addresses the
@@ -1416,17 +1471,12 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                         ]
                         workflow = build_edit_workflow(
                             turn.image_format or "wide",
-                            assemble_edit_prompt(
-                                assemble_positive_prompt(
-                                    turn.image_prompt, hero_tags, character_tags,
-                                    style_tags=style_pos, explicit=explicit,
-                                    scene_characters=scene_characters, world_tags=world_tags,
-                                ),
-                                hero_name,
-                                [
-                                    (index, name)
-                                    for index, (_f, _d, name) in enumerate(references, start=2)
-                                ],
+                            assemble_scene_caption(
+                                turn.image_prompt,
+                                hero_phrase,
+                                [text for _f, _d, text in references],
+                                style=style_pos,
+                                world=world_tags,
                             ),
                             filename_prefix=f"roleplaygen/story_{turn.story_id}/scene_{turn.id}",
                             target=upload_reference_image(client, hero_photo, "hero_photo.png"),
@@ -1449,10 +1499,12 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                     else:
                         workflow = build_workflow(
                             turn.image_format or "wide",
-                            assemble_positive_prompt(
-                                turn.image_prompt, hero_tags, character_tags,
-                                style_tags=style_pos, explicit=explicit,
-                                scene_characters=scene_characters, world_tags=world_tags,
+                            assemble_scene_caption(
+                                turn.image_prompt,
+                                hero_phrase,
+                                character_phrases,
+                                style=style_pos,
+                                world=world_tags,
                             ),
                             # ComfyUI writes into output/roleplaygen/story_<id>/, so the
                             # raw output folder stays readable instead of collecting
@@ -1550,13 +1602,44 @@ def _scene_appearance_tags(db: Any, turn: Turn) -> tuple[str, list[str]]:
     return hero_tags, tags
 
 
+def _scene_appearance_phrases(db: Any, turn: Turn) -> tuple[str, list[str]]:
+    """The hero's and the other characters' looks as caption clauses.
+
+    Same lookup as `_scene_appearance_tags` (hero first, then everyone named in
+    `characters_in_scene`), but the text is a sentence the narrator wrote, not a
+    tag string: "Liria, a young elven woman with platinum hair, wearing a sheer
+    blouse". A caption needs the name bound to the look, which a flat tag list
+    cannot give the model.
+    """
+    characters = db.query(Character).filter(Character.story_id == turn.story_id).all()
+    hero = next((c for c in characters if c.is_hero), None)
+    hero_phrase = _look_with_age(hero) if hero else ""
+    others: list[str] = []
+    npcs = [c for c in characters if not c.is_hero]
+    for name in turn.characters_in_scene or []:
+        if str(name).strip() == "__hero__":
+            continue
+        found = find_character(npcs, str(name))
+        if found and not any(found.id == seen for seen in [c.id for c in npcs if c is found]):
+            clause = _look_with_age(found)
+            if clause and clause not in others:
+                others.append(clause)
+    return hero_phrase, others
+
+
 def _look_with_age(character: Character) -> str:
-    """A character's stored look plus their age, in one tag string."""
-    look = (character.appearance_tags or "").strip()
-    age = (character.age or "").strip()
+    """A character's stored look as one clause, age included.
+
+    The age is appended in lower case: it continues the sentence ("... a plain
+    dress, a woman in her fifties"), it does not start one.
+    """
+    look = clean_phrase(character.appearance_tags or "")
+    age = " ".join((character.age or "").split()).strip(" ,.;")
     if not age:
         return look
-    return f"{look}, {age}" if look else age
+    if not look:
+        return clean_phrase(age)
+    return f"{look}, {age[0].lower() + age[1:]}"
 
 
 def _prompt_words(text: str) -> set[str]:
@@ -1691,10 +1774,9 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                 # story allows it AND the narrator deliberately tagged this
                 # look as nude (e.g. a plot-driven portrait_update).
                 explicit = story_explicit and portrait_wants_nudity(tags, pose, expression)
-                prompt_text = assemble_portrait_prompt(
+                prompt_text = assemble_portrait_caption(
                     tags, pose=pose, expression=expression,
-                    style_tags=style_pos, explicit=explicit, world_tags=world_tags,
-                    age=character.age or "",
+                    style=style_pos, world=world_tags, age=character.age or "",
                 )
                 filename_prefix = f"roleplaygen/story_{character.story_id}/portrait_{character.id}"
                 with _client(settings) as client:

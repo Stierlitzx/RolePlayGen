@@ -301,7 +301,7 @@ def test_every_picture_gets_a_log_even_an_old_one(
 
     turn_log = story.turns[0].image_build_log
     assert turn_log and "rebuilt from the stored scene prompt" in turn_log
-    assert "anime style" in turn_log
+    assert "anime" in turn_log
     assert f"seed: {settings.image_seed}" in turn_log
     assert "standing by river" in turn_log
     assert story.characters[0].portrait_build_log
@@ -309,31 +309,28 @@ def test_every_picture_gets_a_log_even_an_old_one(
 
 
 def test_a_stored_age_reaches_the_picture_prompts() -> None:
-    # "1girl, adult" says nothing about how old she is, which is how a mother
-    # came back as a teenager. The age is spliced into the portrait prompt and
-    # into the scene anchors — and it stays out of the player-facing API.
+    # "a woman in her fifties" has to travel all the way into the caption, or a
+    # mother keeps being painted as a teenager.
     from app.models import Character
 
     mother = Character(
         id=1, story_id=1, name="Mara", is_hero=False,
-        appearance_tags="1girl, grey hair, plain dress, adult", age="a woman in her fifties",
+        appearance_tags="a grey-haired woman in a plain dress", age="a woman in her fifties",
     )
-    prompt = image_service.assemble_portrait_prompt(
-        mother.appearance_tags, age=mother.age or ""
+    caption = image_service.assemble_portrait_caption(
+        mother.appearance_tags, pose="standing by the door", expression="a tired smile",
+        style="a modern anime illustration, cel shading", age=mother.age or "",
     )
-    assert "a woman in her fifties" in prompt
+    assert "a woman in her fifties" in caption
+    assert "grey-haired woman" in caption
+    assert caption.startswith("A modern anime illustration")
     assert image_service._look_with_age(mother) == (
-        "1girl, grey hair, plain dress, adult, a woman in her fifties"
+        "A grey-haired woman in a plain dress, a woman in her fifties"
     )
-    # A cat has no human age: nothing is added, and the prompt stays clean.
-    cat = Character(
-        id=2, story_id=1, name="Shadow", is_hero=False,
-        appearance_tags="1girl, black cat", age=None,
-    )
-    assert image_service._look_with_age(cat) == "1girl, black cat"
-    assert "years" not in image_service.assemble_portrait_prompt(
-        cat.appearance_tags, age=cat.age or ""
-    )
+    # A cat has no human age: nothing is added.
+    cat = Character(id=2, story_id=1, name="Shadow", appearance_tags="a black cat", age=None)
+    assert image_service._look_with_age(cat) == "A black cat"
+    assert "years" not in image_service.assemble_portrait_caption(cat.appearance_tags)
 
     # Never shown to the player: the field is not part of the API schema.
     from app.schemas import CharacterRead

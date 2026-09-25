@@ -44,6 +44,16 @@ Session request: the new ComfyUI templates (Qwen-Image-2.1 "image → image", te
 - **Anything without a photo behaves exactly as before.** No upload → the old tag-only graph, the old img2img rules, the old prompt. The feature is opt-in by uploading a picture, not by flipping a switch that could surprise an existing story.
 - **Steps are a setting now.** `IMAGE_STEPS` (default 25, the shipped value) because render time is roughly linear in it: 16 is about 1.5x faster and is the practical floor before Qwen-Image starts losing hands and small props.
 
+## 2026-09-26: Danbooru tags out, natural-language captions in
+
+The player was generating far better pictures by hand in ComfyUI than the app produced, with the same model. Comparing the two prompts explained it: the hand-written one was *"A beautiful young woman in anime style with a very sexy figure and perfect proportions: ample, round, huge breasts; a slender waist…"*, the app's was *"anime style, explicit, 1girl, solo, adult, elf, platinum blonde hair…"*.
+
+- **Qwen-Image-2.1 is a caption model, not a tag model.** Danbooru tags are SDXL/Illustrious vocabulary. Fed a tag list, it treats every comma as a separate instruction, which is why an anime story came back photorealistic (a wall of `dewy sheen, silky skin, overcast lighting` outweighs one `anime style` token) and why two people in one frame were drawn in two different styles (each tag block read as its own description).
+- **The pipeline now writes captions.** `assemble_scene_caption` and `assemble_portrait_caption` build ONE sentence: the medium, then the shot, then who is in the frame, then where. The narrator's rule changed with it — `image_prompt` is a plain English sentence, `appearance_tags`/`pose`/`expression` are English phrases, and neither may name the art style (the backend writes it) or a person count (the backend states it from `characters_in_scene`).
+- **Style presets are phrases now** (`a modern anime illustration, clean line art, cel shading…`), so the medium is described rather than named once.
+- **Two tag-era guards are gone from the picture path**: the group-scene rewrite (person-count tags, `solo` dropping) and the previous-place negative. A caption does not name the place the story left, and the number of people is stated in words. `sanitize_tags` and the tag helpers stay for the tests that pin their behaviour, and are no longer called when a picture is built.
+- The age, the portraits and the edit graph are unaffected — they all ride on the same caption now.
+
 ## 2026-09-26: Repetitive turns and a hero frozen in one outfit
 
 Reported by the user: every turn replays the same beat (a staged "someone behind the hero" entrance, the same stock thought, the same farewell from the same NPC), and the hero's portrait never changes even when the story puts a new outfit on them.

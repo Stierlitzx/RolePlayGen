@@ -111,12 +111,18 @@ ADULT_RATING = "18+"
 # Extra genres unlocked only for 18+ stories.
 ADULT_GENRE_OPTIONS = ["Hentai", "Erotica", "Slasher / gore", "Extreme horror"]
 
-# Art style presets for the image pipeline. Each maps to positive tags
-# appended to every image prompt of the story. (No negative tags: the
-# Qwen-Image-2.1 workflow runs at cfg=1 and has no negative-prompt node.)
+# Art style presets for the image pipeline. Each maps to a phrase appended to
+# every image prompt of the story. These are SENTENCES, not danbooru tags:
+# Qwen-Image-2.1 was trained on natural captions, and a single word like
+# "anime style" loses against a long photographic description (see DECISIONS
+# 2026-09-26). No negative tags: the workflow runs at cfg=1 and has no
+# negative-prompt node.
 IMAGE_STYLE_TAGS = {
     "Anime (default)": {
-        "positive": "anime style",
+        "positive": (
+            "a modern anime illustration, clean line art, cel shading, flat colour "
+            "with soft shading, expressive eyes"
+        ),
         "negative": "",
     },
     "Semi-realistic": {
