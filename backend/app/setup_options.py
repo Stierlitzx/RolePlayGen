@@ -10,6 +10,13 @@ from typing import Any
 # How many genres the player may combine in one story.
 MAX_GENRES = 5
 
+# Hero gender choice; "Unspecified" leaves it to the narrator.
+HERO_GENDER_OPTIONS = ["Unspecified", "Female", "Male"]
+DEFAULT_HERO_GENDER = "Unspecified"
+
+# The image tag a gender maps to in appearance tags (drives 1girl/1boy).
+GENDER_TAGS = {"Female": "1girl", "Male": "1boy"}
+
 SETTING_OPTIONS = [
     "Medieval kingdom",
     "Space station",
@@ -38,9 +45,9 @@ SETTING_OPTIONS = [
 
 # Short internal world description per preset, fed to the narrator prompt.
 SETTING_DESCRIPTIONS = {
-    "Medieval kingdom": "a classic medieval kingdom of castles, feudal lords, guilds and old superstitions",
+    "Medieval kingdom": "a classic medieval kingdom of castles and world",
     "Space station": "an isolated space station with tight corridors, fragile life support and corporate politics",
-    "Modern city": "a present-day big city with ordinary life hiding secrets, crime and ambition",
+    "Modern city": "a present-day big city with ordinary life",
     "Post-apocalypse": "a ruined world after the collapse, scarce resources, roaming gangs and fragile settlements",
     "Wizard school": "a school of magic with rival houses, strict mentors, forbidden libraries and young mages",
     "Wild West": "a frontier of dusty towns, gunslingers, sheriffs, gold fever and lawless badlands",
@@ -105,12 +112,12 @@ ADULT_RATING = "18+"
 ADULT_GENRE_OPTIONS = ["Hentai", "Erotica", "Slasher / gore", "Extreme horror"]
 
 # Art style presets for the image pipeline. Each maps to positive tags
-# appended to every image prompt of the story and optional negative tags
-# appended to the workflow's negative prompt (node 7).
+# appended to every image prompt of the story. (No negative tags: the
+# Qwen-Image-2.1 workflow runs at cfg=1 and has no negative-prompt node.)
 IMAGE_STYLE_TAGS = {
     "Anime (default)": {
-        "positive": "anime style, anime coloring",
-        "negative": "realistic, photorealistic",
+        "positive": "anime style",
+        "negative": "",
     },
     "Semi-realistic": {
         "positive": "semi-realistic, painterly",
@@ -118,15 +125,15 @@ IMAGE_STYLE_TAGS = {
     },
     "Cinematic realistic": {
         "positive": "realistic, cinematic lighting, film still",
-        "negative": "anime, cartoon",
+        "negative": "",
     },
     "Comic book": {
         "positive": "comic book art, bold outlines, flat colors",
-        "negative": "photorealistic",
+        "negative": "",
     },
     "Watercolor storybook": {
         "positive": "watercolor painting, storybook illustration, soft colors",
-        "negative": "photorealistic",
+        "negative": "",
     },
 }
 IMAGE_STYLE_OPTIONS = list(IMAGE_STYLE_TAGS)
@@ -193,6 +200,49 @@ _SPECIAL = {"Custom", "Random"}
 _NEUTRAL_CULTURE = "Match story language"
 
 
+# Era/world anchor tags per setting preset, appended to every IMAGE prompt of a
+# story (scene and portrait alike). The narrator is told to keep the picture
+# inside the established world, but a small model cheerfully writes "wooden hut"
+# in a medieval story and lets the image model add a modern house next door — the
+# setting is therefore carried as deterministic tags, not as a prompt wish.
+# Positive phrasing only: the workflow runs at cfg=1, so there is no negative
+# prompt to put "not modern" into.
+SETTING_ANCHOR_TAGS = {
+    "Medieval kingdom": "medieval fantasy setting, rustic stone and timber architecture, thatched roofs, period-accurate props, no modern objects",
+    "Space station": "science fiction setting, futuristic metal corridors, technology panels, space station interior",
+    "Modern city": "contemporary urban setting, modern city street, glass and concrete architecture",
+    "Post-apocalypse": "post-apocalyptic setting, ruined buildings, overgrown rubble, scavenged tech",
+    "Wizard school": "fantasy magic academy, old stone halls, arcane library, candlelight",
+    "Wild West": "wild west frontier town, wooden saloon buildings, dusty street, 19th century",
+    "Underwater world": "underwater setting, submerged ruins, coral, drifting light caustics",
+    "Cyberpunk metropolis": "cyberpunk city, neon signs, holographic advertisements, wet asphalt",
+    "High fantasy epic": "high fantasy setting, ancient kingdoms, magical landscape, period architecture",
+    "Noir detective city": "film noir city, 1940s streets, rain-slicked asphalt, vintage cars",
+    "Horror mansion": "victorian gothic mansion, candlelit dusty corridors, dark wood panelling",
+    "Historical drama": "historical period setting, period-accurate architecture and clothing, pre-modern era",
+    "Superhero city": "modern metropolis, skyscrapers, comic book city skyline",
+    "Fairy tale kingdom": "fairy tale village, enchanted forest, quaint cottages",
+    "Pirate seas": "age of sail, wooden sailing ships, tropical port town, 18th century",
+    "Dystopia": "dystopian city, brutalist concrete blocks, propaganda banners, surveillance cameras",
+    "Steampunk": "steampunk setting, brass machinery, steam pipes, victorian technology",
+    "Wuxia / martial arts": "ancient chinese setting, traditional wooden architecture, bamboo forest, hanfu",
+    "Survival island": "deserted island, palm trees, sandy shore, wild jungle",
+    "Cosmic horror": "cosmic horror atmosphere, eldritch fog, impossible geometry, decaying old town",
+    "Slice-of-life school": "modern japanese school, classroom, school uniforms, cherry blossoms",
+}
+
+
+def setting_anchor(setting: str | None, custom_setting: str | None = None) -> str:
+    """Image tags that pin the story's world, or "" when the preset has none.
+
+    "Custom" worlds carry no anchor: the player's own freeform setting is the
+    only description available, and inventing an era for it would fight it.
+    """
+    if not setting or setting == "Custom":
+        return ""
+    return SETTING_ANCHOR_TAGS.get(setting, "")
+
+
 def setting_description(setting: str, custom_setting: str | None) -> str:
     """Short world description for the narrator prompt."""
     if setting == "Custom":
@@ -251,8 +301,24 @@ _RATING_CLAUSES = {
     "7+": "family-friendly content: mild fantasy violence, no swearing, no sexual content, frightening moments stay brief and safe",
     "12+": "teen content: action violence without gore, romance without sexual content, mild language only",
     "16+": "mature content: realistic violence without lingering gore, sexual references and fade-to-black at most, stronger language allowed",
-    "18+": "adult content: unrestricted adult themes, strong language and dark subject matter allowed",
+    "18+": "adult content: unrestricted adult themes, strong language and dark subject matter allowed and more sexual content, with sexualized female characters",
 }
+
+
+_CHOICE_PROMPT_FALLBACKS = {
+    "Russian": "Что ты сделаешь?",
+    "English": "What will you do?",
+    "Kazakh": "Не істейсің?",
+}
+
+
+def choice_prompt_fallback(language: str | None) -> str:
+    """The question used when the narrator sends an empty choice prompt.
+
+    The prompt is cosmetic UI text ("What will you do?" above the options), so a
+    model that forgets it must never cost the player a turn.
+    """
+    return _CHOICE_PROMPT_FALLBACKS.get(str(language or ""), _CHOICE_PROMPT_FALLBACKS["English"])
 
 
 def age_rating_clause(params: dict[str, Any]) -> str:

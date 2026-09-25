@@ -16,6 +16,9 @@ function makeCharacter(overrides: Partial<CharacterInfo>): CharacterInfo {
     portrait_status: 'none',
     portrait_url: null,
     portrait_error: null,
+    portrait_build_log: null,
+    photo_url: null,
+    portrait_history: [],
     created_at: '2026-09-21T00:00:00Z',
     ...overrides,
   };
@@ -65,6 +68,69 @@ describe('CharactersPanel', () => {
     expect(screen.getByText('you')).toBeInTheDocument();
   });
 
+  it('keeps the last known list when a reload fails', async () => {
+    // A hung backend used to blank the panel, which looked exactly like "my
+    // characters are gone". The list must survive the error.
+    const characters = [makeCharacter({ name: 'Tom' })];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse(characters))
+      .mockRejectedValue(new Error('The server is not responding.'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { rerender } = render(<CharactersPanel storyId={1} refreshKey={0} />);
+    expect(await screen.findByText('Tom')).toBeInTheDocument();
+
+    // The parent bumps refreshKey -> a reload that fails.
+    rerender(<CharactersPanel storyId={1} refreshKey={1} />);
+    expect(await screen.findByText(/showing the last known list/i)).toBeInTheDocument();
+    expect(screen.getByText('Tom')).toBeInTheDocument();
+  });
+
+  it('uploads the player’s own picture for a character', async () => {
+    const character = makeCharacter({});
+    const uploaded = makeCharacter({
+      photo_url: '/media/1/photo_1.png',
+      portrait_url: '/media/1/photo_1.png',
+      portrait_status: 'done',
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse([character]))
+      .mockResolvedValueOnce(okResponse(uploaded));
+    vi.stubGlobal('fetch', fetchMock);
+    // jsdom has no FileReader data for real files; stand in for the read step.
+    const readAsDataURL = vi
+      .spyOn(FileReader.prototype, 'readAsDataURL')
+      .mockImplementation(function (this: FileReader) {
+        this.onload?.({ target: this } as ProgressEvent<FileReader>);
+      });
+    Object.defineProperty(FileReader.prototype, 'result', {
+      configurable: true,
+      get: () => 'data:image/png;base64,aGVsbG8=',
+    });
+
+    render(<CharactersPanel storyId={1} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Kaelen/ }));
+    const input = await screen.findByLabelText(/Use your own picture/);
+    const file = new File(['x'], 'kaelen.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByAltText('Portrait of Kaelen').some(
+          (node) => node.getAttribute('src') === '/media/1/photo_1.png',
+        ),
+      ).toBe(true),
+    );
+    const uploadCall = fetchMock.mock.calls.find(([, options]) =>
+      String((options as RequestInit).method ?? '') === 'POST',
+    );
+    expect(uploadCall).toBeTruthy();
+    expect(String((uploadCall?.[1] as RequestInit).body)).toContain('data:image/png;base64');
+    readAsDataURL.mockRestore();
+  });
+
   it('retries a failed portrait from the detail view', async () => {
     const failed = makeCharacter({
       id: 5,
@@ -100,5 +166,39 @@ describe('CharactersPanel', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Kaelen/ }));
     await screen.findByRole('dialog');
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
+  it('shows the portrait history gallery in the detail view', async () => {
+    stubListFetch([
+      makeCharacter({
+        portrait_status: 'done',
+        portrait_url: '/media/1/char_1.png',
+        portrait_history: [
+          { turn_id: 1, portrait_url: '/media/1/char_1.png', current: false },
+          { turn_id: 7, portrait_url: '/media/1/char_1_v2.png', current: true },
+        ],
+      }),
+    ]);
+    render(<CharactersPanel storyId={1} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Kaelen/ }));
+
+    expect(await screen.findByText('Past looks')).toBeInTheDocument();
+    expect(screen.getByAltText('Kaelen — look 1')).toHaveAttribute('src', '/media/1/char_1.png');
+    expect(screen.getByAltText('Kaelen — look 2')).toHaveAttribute('src', '/media/1/char_1_v2.png');
+    expect(screen.getByText(/turn 7 · current/)).toBeInTheDocument();
+  });
+
+  it('hides the gallery when there is only one look', async () => {
+    stubListFetch([
+      makeCharacter({
+        portrait_status: 'done',
+        portrait_url: '/media/1/char_1.png',
+        portrait_history: [{ turn_id: 1, portrait_url: '/media/1/char_1.png', current: true }],
+      }),
+    ]);
+    render(<CharactersPanel storyId={1} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Kaelen/ }));
+    await screen.findByRole('dialog');
+    expect(screen.queryByText('Past looks')).not.toBeInTheDocument();
   });
 });

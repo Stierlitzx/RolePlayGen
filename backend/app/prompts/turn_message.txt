@@ -7,7 +7,8 @@ Genres: {genres}
 Tone: {tone}
 Hero role: {hero_role}
 Hero name: {hero_name}
-Hero appearance: {hero_appearance}
+Hero gender: {hero_gender}
+Hero appearance at the opening (the CURRENT look is in KNOWN CHARACTERS; if it persistently changes later, send the "hero" report again with portrait_update: true): {hero_appearance}
 Story language: {language}
 Setting culture: {setting_culture}
 Character naming culture: {naming_culture}
@@ -18,7 +19,7 @@ Maximum turns: {max_turns}
 {position_hint}
 {intro_hint}
 
-KNOWN CHARACTERS (keep them consistent; update via the characters field)
+KNOWN CHARACTERS (already established — keep them consistent, never report them as is_new, never rename them; change a look only via portrait_update)
 {known_characters}
 
 REMEMBERED FACTS (never contradict these)
@@ -29,10 +30,20 @@ OLDER STORY SUMMARY
 
 RECURRING CHARACTERS AND RELATIONSHIPS ARE PART OF THE FACTS — keep their names, personalities and voices consistent.
 
-RECENT TURNS
+RECENT TURNS (these already happened — continue from the last line, never replay them: no reused staging, description, internal monologue or quoted line)
 {recent_turns}
 
 PLAYER INPUT
 {player_input}
 
-Write the next turn (350-700 words, 4-8 paragraphs, with dialogue). Return only the JSON object.
+THE INPUT ABOVE IS A DIRECT ORDER, NOT A SUGGESTION. Do exactly what it says this turn: if it names an action, the hero performs that action and the world reacts; if it names an event or an arrival, that event happens now. Never ignore it, never delay it, never do something else instead.
+
+PLAYER FACTS (pinned by the player — true for the rest of the story until the player states otherwise; respect them in every response and never contradict them)
+{player_facts}
+
+PLAYER NOTE FOR THIS TURN (a note to you from the player, sent together with the action above; "None" means no note was sent — anything else is a DIRECT ORDER for this turn and MUST happen in your response)
+{player_note}
+
+Write the next turn (length and structure per the system rules, with dialogue — including characters talking to each other, not only to the player). Return only the JSON object.
+
+FORMAT REMINDER: narration, options and state stay in {language} — and the narration is PROSE in at least three paragraphs separated by blank lines (\n\n), with the quoted speech embedded in and attributed by that prose, never a chain of bare dialogue lines — while image_prompt, appearance_tags, pose and expression MUST be English comma-separated danbooru tags, and image_format MUST be exactly "wide" (scene illustrations always render in the wide format).

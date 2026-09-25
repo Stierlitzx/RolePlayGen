@@ -1,0 +1,47 @@
+Story: hero look evolution, player pictures, Qwen edit graph, and narration guards
+
+The accumulated work of the last sessions, all covered by tests.
+
+Narration quality
+- Repetition guard (`narration_style.repetition_problems`): a turn that re-uses an
+  8-word run or a verbatim quoted line of an earlier turn gets ONE rewrite
+  request; a NOVELTY rule in the narrator prompt bans the devices the players
+  kept seeing (a sound behind the hero, an NPC returning with the same farewell,
+  stock thought openers, re-described places).
+- GENRES ARE ORDERS rule: the chosen genres are binding, and a narrator must not
+  substitute its own preferred genre (mystery, grim strangers) for one the player
+  did not pick.
+- Empty choice prompts are repaired in the story language.
+
+Characters
+- The hero is no longer frozen in the outfit they happened to wear at the opening:
+  the `hero` report carries portrait_update/portrait_revert, and the hero's
+  current look travels back to the model in KNOWN CHARACTERS.
+- Character age in picture prompts ("a woman in her fifties") so a mother stops
+  being painted as a teenager — stored on Character.age, spliced into portraits
+  and scene anchors, never exposed in the API, omitted for creatures that have no
+  human age.
+- Character look tracking, portraits, portrait history gallery, inline "new look"
+  rows in the feed (from earlier sessions, part of the same uncommitted work).
+
+Pictures
+- Qwen-Image-2.1 edit graph (`wide_edit.json`, `portrait_edit.json`,
+  `build_edit_workflow`): image_1 is the picture being edited, image_2..image_10
+  are references. Verified against a real ComfyUI 0.37 job, not just unit tests.
+- Optional hero photo at setup and player pictures per character (Characters tab)
+  become the base picture every later picture is edited from; the setup photo
+  drives the hero's own portrait too (it used to drive scenes only).
+- "Repaint this picture / portrait" buttons, an image log per picture (rebuilt
+  for older pictures), a fixed IMAGE_SEED, a configurable IMAGE_STEPS, and the
+  story art style anchoring both ends of every prompt.
+
+Frontend
+- Repaint buttons, the image log, a character-photo upload, and a cast list that
+  survives a failed reload instead of blanking itself.
+- The choice panel now starts collapsed: it must not cover the feed until asked.
+
+Ops
+- Tests never write into the real IMAGE_DIR, and a guard fails the suite if one
+  tries; local run artefacts are gitignored.
+- GOTCHAS documents the wedged-backend trap: several uvicorn instances on port
+  8000 leave a dead socket that only a reboot releases.

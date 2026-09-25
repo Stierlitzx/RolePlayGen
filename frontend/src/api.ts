@@ -30,6 +30,8 @@ export interface Turn {
   index: number;
   player_input_type: 'option' | 'custom' | 'start';
   player_input_text: string | null;
+  note_text: string | null;
+  note_type: 'fact' | 'event' | null;
   narration: string;
   choice: Choice | null;
   state: TurnState;
@@ -38,6 +40,8 @@ export interface Turn {
   image_format: ImageFormat | null;
   image_url: string | null;
   image_error: string | null;
+  /** What was sent to the picture model for this turn (mode, steps, prompt). */
+  image_build_log: string | null;
   created_at: string;
 }
 
@@ -57,6 +61,7 @@ export interface Story {
   created_at: string;
   updated_at: string;
   turns: Turn[];
+  pinned_facts: string[];
 }
 
 export interface StorySummary extends Omit<Story, 'turns'> {
@@ -82,6 +87,20 @@ export interface SetupOptions {
   default_model: string;
   ai_configured: boolean;
   mock_llm: boolean;
+  default_provider: 'gemini' | 'local' | 'groq' | 'openrouter' | 'mistral';
+  gemini_models: string[];
+  default_gemini_model: string;
+  gemini_configured: boolean;
+  local_model: string | null;
+  local_configured: boolean;
+  groq_model: string | null;
+  groq_configured: boolean;
+  openrouter_model: string | null;
+  openrouter_configured: boolean;
+  mistral_model: string | null;
+  mistral_configured: boolean;
+  hero_genders: string[];
+  default_hero_gender: string;
 }
 
 export interface StoryCreate {
@@ -92,9 +111,11 @@ export interface StoryCreate {
   hero_role: string | null;
   hero_name: string | null;
   hero_appearance: string | null;
+  hero_gender: string | null;
   length: Length;
   custom_turns: number | null;
   model: string | null;
+  llm_provider: 'gemini' | 'local' | 'groq' | 'openrouter' | 'mistral' | null;
   content_restrictions: string | null;
   language: Language;
   custom_details: string | null;
@@ -106,6 +127,14 @@ export interface StoryCreate {
   graphic_violence: boolean;
   image_style: string | null;
   narrator_style: string | null;
+  /** Optional player photo of the hero, as a data URL. */
+  hero_image?: string | null;
+}
+
+export interface PortraitVersion {
+  turn_id: number | null;
+  portrait_url: string | null;
+  current: boolean;
 }
 
 export interface CharacterInfo {
@@ -120,10 +149,19 @@ export interface CharacterInfo {
   portrait_status: ImageStatus;
   portrait_url: string | null;
   portrait_error: string | null;
+  /** The picture the player uploaded for this character, if any. */
+  photo_url: string | null;
+  /** What was sent to the picture model for the last portrait. */
+  portrait_build_log: string | null;
+  portrait_history: PortraitVersion[];
   created_at: string;
 }
 
-export type TurnCreate = { option_id: ChoiceOption['id'] } | { custom_text: string };
+// The optional note goes with either an option pick or a custom action; it is
+// omitted entirely when the field is empty (an empty note changes nothing).
+export type TurnCreate =
+  | { option_id: ChoiceOption['id']; note_text?: string }
+  | { custom_text: string; note_text?: string };
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_TIMEOUT_MS = 12_000;
@@ -173,14 +211,31 @@ export const api = {
     request<Story>(`/stories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }, LLM_TIMEOUT_MS),
   regenerateStart: (id: number) =>
     request<Story>(`/stories/${id}/regenerate-start`, { method: 'POST' }, LLM_TIMEOUT_MS),
-  turnImage: (turnId: number) => request<TurnImageInfo>(`/turns/${turnId}/image`, undefined, POLL_TIMEOUT_MS),
+  regenerateLast: (id: number) =>
+    request<Story>(`/stories/${id}/regenerate-last`, { method: 'POST' }, LLM_TIMEOUT_MS),
+  turnImage: (turnId: number) =>
+    request<TurnImageInfo>(`/turns/${turnId}/image`, undefined, POLL_TIMEOUT_MS),
+  /** Repaint a finished picture with the current prompt/style (new seed, new log). */
+  redoTurnImage: (turnId: number) =>
+    request<TurnImageInfo>(`/turns/${turnId}/image/redo`, { method: 'POST' }),
   retryTurnImage: (turnId: number) =>
     request<TurnImageInfo>(`/turns/${turnId}/image/retry`, { method: 'POST' }),
   characters: (storyId: number) =>
     request<CharacterInfo[]>(`/stories/${storyId}/characters`, undefined, POLL_TIMEOUT_MS),
   character: (characterId: number) =>
     request<CharacterInfo>(`/characters/${characterId}`, undefined, POLL_TIMEOUT_MS),
+  /** Repaint a finished portrait with the current prompt/style. */
+  redoCharacterPortrait: (characterId: number) =>
+    request<CharacterInfo>(`/characters/${characterId}/portrait/redo`, { method: 'POST' }),
+  /** Hand the generator the player's own picture of a character (Characters tab). */
+  uploadCharacterPhoto: (characterId: number, image: string, useAsPortrait = true) =>
+    request<CharacterInfo>(`/characters/${characterId}/portrait`, {
+      method: 'POST',
+      body: JSON.stringify({ image, use_as_portrait: useAsPortrait }),
+    }),
   retryCharacterPortrait: (characterId: number) =>
     request<CharacterInfo>(`/characters/${characterId}/portrait/retry`, { method: 'POST' }),
+  deletePinnedFact: (storyId: number, index: number) =>
+    request<{ pinned_facts: string[] }>(`/stories/${storyId}/pinned-facts/${index}`, { method: 'DELETE' }),
   deleteStory: (id: number) => request<void>(`/stories/${id}`, { method: 'DELETE' }),
 };

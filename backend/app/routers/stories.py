@@ -8,16 +8,27 @@ from sqlalchemy.orm import Session
 from ..config import Settings, get_settings
 from ..db import get_db
 from ..models import Story
-from ..schemas import SetupOptions, StoryCreate, StoryRead, StorySummary, StoryUpdate, TurnCreate, TurnRead
-from ..services import story_engine
+from ..schemas import (
+    PinnedFactsRead,
+    SetupOptions,
+    StoryCreate,
+    StoryRead,
+    StorySummary,
+    StoryUpdate,
+    TurnCreate,
+    TurnRead,
+)
+from ..services import image_service, story_engine
 from ..setup_options import (
     ADULT_GENRE_OPTIONS,
     AGE_RATING_OPTIONS,
     CULTURE_OPTIONS,
     DEFAULT_AGE_RATING,
+    DEFAULT_HERO_GENDER,
     DEFAULT_IMAGE_STYLE,
     DEFAULT_NARRATOR_STYLE,
     GENRE_OPTIONS,
+    HERO_GENDER_OPTIONS,
     IMAGE_STYLE_OPTIONS,
     LANGUAGE_OPTIONS,
     LENGTH_OPTIONS,
@@ -40,9 +51,31 @@ def health() -> dict[str, str]:
 
 @router.get("/setup-options", response_model=SetupOptions)
 def setup_options(settings: Settings = Depends(get_settings)) -> SetupOptions:
-    # With a local OpenAI-compatible provider the Gemini model list is
-    # meaningless: offer exactly the configured local model instead.
-    is_gemini = (settings.llm_provider or "gemini") == "gemini"
+    # All configured providers are served side by side: the player picks the
+    # text model source per story in the setup form. The legacy fields
+    # `models`, `default_model` and `ai_configured` keep following the
+    # server-wide LLM_PROVIDER for clients that predate the provider picker.
+    provider = (settings.llm_provider or "gemini").lower()
+    is_gemini = provider == "gemini"
+    local_configured = bool(settings.openai_base_url)
+    groq_configured = bool(settings.groq_api_key)
+    openrouter_configured = bool(settings.openrouter_api_key)
+    mistral_configured = bool(settings.mistral_api_key)
+    legacy_model = {
+        "gemini": settings.model_name,
+        "groq": settings.groq_model,
+        "openrouter": settings.openrouter_model,
+        "mistral": settings.mistral_model,
+    }.get(provider, settings.openai_model)
+    legacy_ready = {
+        "gemini": bool(settings.gemini_api_key),
+        "groq": groq_configured,
+        "openrouter": openrouter_configured,
+        "mistral": mistral_configured,
+    }.get(provider, local_configured)
+    default_provider = (
+        provider if provider in ("gemini", "groq", "openrouter", "mistral") else "local"
+    )
     return SetupOptions(
         settings=SETTING_OPTIONS,
         genres=GENRE_OPTIONS,
@@ -58,10 +91,24 @@ def setup_options(settings: Settings = Depends(get_settings)) -> SetupOptions:
         default_age_rating=DEFAULT_AGE_RATING,
         default_image_style=DEFAULT_IMAGE_STYLE,
         default_narrator_style=DEFAULT_NARRATOR_STYLE,
-        models=MODEL_OPTIONS if is_gemini else [settings.openai_model],
-        default_model=settings.model_name if is_gemini else settings.openai_model,
-        ai_configured=bool(settings.gemini_api_key) if is_gemini else bool(settings.openai_base_url),
+        models=MODEL_OPTIONS if is_gemini else [legacy_model],
+        default_model=settings.model_name if is_gemini else legacy_model,
+        ai_configured=legacy_ready,
         mock_llm=settings.mock_llm,
+        default_provider=default_provider,
+        gemini_models=MODEL_OPTIONS,
+        default_gemini_model=settings.model_name,
+        gemini_configured=bool(settings.gemini_api_key),
+        local_model=settings.openai_model if local_configured else None,
+        local_configured=local_configured,
+        groq_model=settings.groq_model if groq_configured else None,
+        groq_configured=groq_configured,
+        openrouter_model=settings.openrouter_model if openrouter_configured else None,
+        openrouter_configured=openrouter_configured,
+        mistral_model=settings.mistral_model if mistral_configured else None,
+        mistral_configured=mistral_configured,
+        hero_genders=HERO_GENDER_OPTIONS,
+        default_hero_gender=DEFAULT_HERO_GENDER,
     )
 
 
@@ -93,10 +140,17 @@ def create_story(
 
 
 @router.get("/stories/{story_id}", response_model=StoryRead)
-def get_story(story_id: int, db: Session = Depends(get_db)) -> Story:
+def get_story(
+    story_id: int,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> Story:
     story = db.get(Story, story_id)
     if story is None:
         raise story_engine.StoryNotFoundError("Story not found.")
+    # Every picture gets a log, including the ones drawn before logging existed.
+    image_service.ensure_build_logs(db, list(story.turns), settings)
+    image_service.ensure_portrait_build_logs(list(story.characters), settings)
     return story
 
 
@@ -119,6 +173,15 @@ def regenerate_story_start(
     return story_engine.regenerate_start(db, story_id, settings)
 
 
+@router.post("/stories/{story_id}/regenerate-last", response_model=StoryRead)
+def regenerate_last_story_turn(
+    story_id: int,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> Story:
+    return story_engine.regenerate_last_turn(db, story_id, settings)
+
+
 @router.post("/stories/{story_id}/turns", response_model=TurnRead, status_code=201)
 def create_turn(
     story_id: int,
@@ -127,6 +190,17 @@ def create_turn(
     settings: Settings = Depends(get_settings),
 ) -> object:
     return story_engine.add_turn(db, story_id, payload, settings)
+
+
+@router.delete("/stories/{story_id}/pinned-facts/{index}", response_model=PinnedFactsRead)
+def delete_pinned_fact(
+    story_id: int,
+    index: int,
+    db: Session = Depends(get_db),
+) -> PinnedFactsRead:
+    # The player's manual fix for a mistaken "fact" note; the fact stops being
+    # passed to the narrator from the next turn on.
+    return PinnedFactsRead(pinned_facts=story_engine.delete_pinned_fact(db, story_id, index))
 
 
 @router.delete("/stories/{story_id}", status_code=204)

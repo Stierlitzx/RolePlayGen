@@ -8,6 +8,10 @@ os.environ["MOCK_LLM"] = "true"
 os.environ["GEMINI_API_KEY"] = ""
 # Tests must not inherit the developer's provider choice from backend/.env.
 os.environ["LLM_PROVIDER"] = "gemini"
+os.environ["OPENAI_MODEL"] = "llama3.1:8b"
+os.environ["GROQ_API_KEY"] = ""
+os.environ["OPENROUTER_API_KEY"] = ""
+os.environ["MISTRAL_API_KEY"] = ""
 # Never start image jobs in tests; the backend/.env file enables them locally.
 os.environ["IMAGE_GENERATION_ENABLED"] = "false"
 
@@ -41,14 +45,37 @@ def db_session() -> Generator[Session, None, None]:
         Base.metadata.drop_all(bind=engine)
 
 
+@pytest.fixture(autouse=True)
+def _no_writes_into_the_real_image_dir() -> Generator[None, None, None]:
+    """Guard rail: no test may create a file under the real ./data/images.
+
+    The default `image_dir` is relative to the working directory, so a test
+    that forgets to pin it silently writes into the developer's own story
+    folders. The most recent regression was the upload tests leaving two
+    5-byte files in `data/images/1/`.
+    """
+    real = (Path.cwd() / "data" / "images").resolve()
+    before = {path for path in real.rglob("*") if path.is_file()} if real.exists() else set()
+    yield
+    after = {path for path in real.rglob("*") if path.is_file()} if real.exists() else set()
+    leaked = sorted(str(path.relative_to(real)) for path in after - before)
+    assert not leaked, (
+        "tests wrote into the real IMAGE_DIR: " + ", ".join(leaked)
+    )
+
+
 @pytest.fixture
-def settings() -> Settings:
+def settings(tmp_path: Path) -> Settings:
+    # `image_dir` MUST be a temp path: the default is the real ./data/images, and
+    # a test that writes a picture (an upload, a mock image) would drop junk into
+    # the developer's own story folders.
     return Settings(
         gemini_api_key="",
         model_name="test-model",
         database_url="sqlite:///:memory:",
         max_tokens=1200,
         mock_llm=True,
+        image_dir=str(tmp_path / "images"),
     )
 
 

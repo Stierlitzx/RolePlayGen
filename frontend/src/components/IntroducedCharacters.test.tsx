@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CharacterInfo } from '../api';
-import IntroducedCharacters from './IntroducedCharacters';
+import IntroducedCharacters, { charactersWithNewLook } from './IntroducedCharacters';
 
 function makeCharacter(overrides: Partial<CharacterInfo>): CharacterInfo {
   return {
@@ -16,6 +16,9 @@ function makeCharacter(overrides: Partial<CharacterInfo>): CharacterInfo {
     portrait_status: 'none',
     portrait_url: null,
     portrait_error: null,
+    portrait_build_log: null,
+    photo_url: null,
+    portrait_history: [],
     created_at: '2026-09-21T00:00:00Z',
     ...overrides,
   };
@@ -79,5 +82,49 @@ describe('IntroducedCharacters', () => {
   it('marks the hero with a you badge', () => {
     render(<IntroducedCharacters characters={[makeCharacter({ is_hero: true, name: 'Ayla' })]} />);
     expect(screen.getByText('you')).toBeInTheDocument();
+  });
+
+  it('labels a portrait update row as a new look', () => {
+    render(
+      <IntroducedCharacters
+        lookChanged
+        characters={[
+          makeCharacter({ portrait_status: 'done', portrait_url: '/media/1/char_1_v2.png' }),
+        ]}
+      />,
+    );
+    expect(screen.getByText('New look')).toBeInTheDocument();
+    expect(screen.getByAltText('Portrait of Kaelen')).toHaveAttribute('src', '/media/1/char_1_v2.png');
+    expect(screen.getByText('Kaelen')).toBeInTheDocument();
+  });
+
+  it('does not label a first appearance as a new look', () => {
+    const { container } = render(<IntroducedCharacters characters={[makeCharacter({})]} />);
+    expect(container.querySelector('.introduced-label')).toBeNull();
+  });
+
+  it('picks the characters whose current look was created on the turn', () => {
+    const introduced = makeCharacter({
+      id: 1,
+      first_seen_turn_id: 7,
+      portrait_history: [{ turn_id: 7, portrait_url: '/media/1/char_1.png', current: true }],
+    });
+    const changed = makeCharacter({
+      id: 2,
+      first_seen_turn_id: 3,
+      portrait_history: [
+        { turn_id: 3, portrait_url: '/media/1/char_2.png', current: false },
+        { turn_id: 7, portrait_url: '/media/1/char_2_v2.png', current: true },
+      ],
+    });
+    const untouched = makeCharacter({
+      id: 3,
+      first_seen_turn_id: 3,
+      portrait_history: [{ turn_id: 3, portrait_url: '/media/1/char_3.png', current: true }],
+    });
+    // The character introduced on this turn is shown as an introduction, not
+    // twice; the one whose look changed here is the new-look row.
+    expect(charactersWithNewLook([introduced, changed, untouched], 7)).toEqual([changed]);
+    expect(charactersWithNewLook([changed], 8)).toEqual([]);
   });
 });

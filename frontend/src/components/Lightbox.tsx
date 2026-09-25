@@ -25,7 +25,12 @@ export function Lightbox({ src, alt, onClose }: LightboxProps) {
   }, [onClose]);
 
   return (
-    <div className="lightbox-backdrop" role="dialog" aria-label={alt} onClick={onClose}>
+    <div
+      className={zoomed ? 'lightbox-backdrop zoomed' : 'lightbox-backdrop'}
+      role="dialog"
+      aria-label={alt}
+      onClick={onClose}
+    >
       <button type="button" className="lightbox-close" aria-label="Close" onClick={onClose}>
         ✕
       </button>

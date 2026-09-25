@@ -17,7 +17,7 @@ Read, in this order: `docs/FEATURES.md` (what exists — the project's memory), 
 
 ## Stack
 
-Backend: Python 3.11+, FastAPI, SQLAlchemy 2, SQLite, Pydantic v2, uvicorn. Frontend: Vite, React, TypeScript, plain CSS with no UI library. AI text: Google Gemini REST API or any OpenAI-compatible endpoint (Ollama, LM Studio, OpenRouter), both via plain `httpx` in `services/llm.py`, switchable per story. Images: local ComfyUI. API keys and model names come from `backend/.env` (gitignored) and must never be hardcoded.
+Backend: Python 3.11+, FastAPI, SQLAlchemy 2, SQLite, Pydantic v2, uvicorn. Frontend: Vite, React, TypeScript, plain CSS with no UI library. AI text: Google Gemini REST API, the named cloud providers Groq, OpenRouter and Mistral, or any OpenAI-compatible local endpoint (Ollama, LM Studio) — all via plain `httpx` in `services/llm.py`, switchable per story. Images: local ComfyUI. API keys and model names come from `backend/.env` (gitignored) and must never be hardcoded.
 
 ## Repository layout
 

@@ -10,6 +10,8 @@ function makeTurn(overrides: Partial<Turn>): Turn {
     index: 0,
     player_input_type: 'start',
     player_input_text: null,
+    note_text: null,
+    note_type: null,
     narration: 'Some narration.',
     choice: null,
     state: { scene: 'Scene', summary: 'Summary', facts: [] },
@@ -18,6 +20,7 @@ function makeTurn(overrides: Partial<Turn>): Turn {
     image_format: 'wide',
     image_url: null,
     image_error: null,
+    image_build_log: null,
     created_at: '2026-09-21T00:00:00Z',
     ...overrides,
   };

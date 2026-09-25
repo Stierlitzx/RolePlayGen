@@ -25,7 +25,10 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
             image_service.load_workflow(fmt)  # fail fast with a clear error
         interrupted = image_service.reset_interrupted_turns()
         if interrupted:
-            print(f"Reset {interrupted} interrupted image job(s) to failed.")
+            print(
+                f"Recovered {interrupted} interrupted image job(s): finished ones are "
+                "adopted, ones ComfyUI is still drawing are waited for."
+            )
         image_service.start_worker()
     yield
     image_service.stop_worker()

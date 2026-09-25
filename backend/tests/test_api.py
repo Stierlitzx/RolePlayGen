@@ -28,6 +28,32 @@ def test_health_and_setup_options(client: TestClient) -> None:
     assert options.json()["mock_llm"] is True
     assert len(options.json()["models"]) >= 1
     assert any(length["value"] == "custom" for length in options.json()["lengths"])
+    # the provider picker: both backends are served side by side
+    body = options.json()
+    assert body["default_provider"] == "gemini"
+    assert len(body["gemini_models"]) >= 1
+    assert body["gemini_configured"] is False  # no key in tests
+    assert body["local_configured"] is True  # default OPENAI_BASE_URL is set
+    assert body["local_model"] == "llama3.1:8b"
+    assert body["groq_configured"] is False  # no key in tests
+    assert body["groq_model"] is None
+    assert body["openrouter_configured"] is False
+    assert body["openrouter_model"] is None
+    assert body["mistral_configured"] is False
+    assert body["mistral_model"] is None
+
+
+def test_story_provider_choice_round_trips(client: TestClient) -> None:
+    for provider in ("local", "groq", "openrouter", "mistral"):
+        data = payload()
+        data["llm_provider"] = provider
+        created = client.post("/api/stories", json=data)
+        assert created.status_code == 201
+        assert created.json()["settings"]["llm_provider"] == provider
+
+    bad = payload()
+    bad["llm_provider"] = "anthropic"
+    assert client.post("/api/stories", json=bad).status_code == 422
 
 
 def test_story_lifecycle_through_api(client: TestClient) -> None:

@@ -4,16 +4,34 @@ from app.setup_options import (
     CULTURE_OPTIONS,
     GENRE_OPTIONS,
     MAX_GENRES,
+    SETTING_ANCHOR_TAGS,
     SETTING_DESCRIPTIONS,
     SETTING_OPTIONS,
     effective_culture,
     effective_naming_culture,
     resolve_randoms,
+    setting_anchor,
     setting_description,
 )
 
 
 def test_every_preset_has_a_description() -> None:
+    for preset in SETTING_OPTIONS:
+        if preset in ("Custom", "Random"):
+            continue
+        assert SETTING_DESCRIPTIONS[preset], preset
+
+
+def test_every_preset_has_an_image_world_anchor() -> None:
+    # The anchor is what keeps a medieval hut from growing a modern house: it
+    # must exist for every real preset, and stay empty for Custom/unknown.
+    for preset in SETTING_OPTIONS:
+        if preset in ("Custom", "Random"):
+            continue
+        assert SETTING_ANCHOR_TAGS[preset], preset
+    assert "medieval" in setting_anchor("Medieval kingdom")
+    assert setting_anchor("Custom", "my own world") == ""
+    assert setting_anchor("Made-up universe") == ""
     for preset in SETTING_OPTIONS:
         if preset in ("Custom", "Random"):
             continue

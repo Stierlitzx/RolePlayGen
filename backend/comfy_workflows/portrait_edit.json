@@ -46,14 +46,15 @@
       "prompt": "",
       "negative_prompt": "",
       "resolution": 1024,
-      "clip": ["5", 1]
+      "clip": ["5", 1],
+      "vae": ["3", 0]
     }
   },
   "7": {
     "class_type": "EmptyLatentImage",
     "inputs": {
-      "width": 1568,
-      "height": 880,
+      "width": 880,
+      "height": 1320,
       "batch_size": 1
     }
   },
@@ -69,21 +70,29 @@
       "model": ["5", 0],
       "positive": ["6", 0],
       "negative": ["6", 1],
-      "latent_image": ["7", 0]
+      "latent_image": ["9", 0]
     }
   },
   "9": {
-    "class_type": "VAEDecode",
+    "class_type": "ComfySwitchNode",
     "inputs": {
-      "samples": ["8", 0],
-      "vae": ["3", 0]
+      "on_false": ["6", 2],
+      "on_true": ["7", 0],
+      "switch": true
     }
   },
   "10": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "RolePlayGen_landscape",
-      "images": ["9", 0]
+      "filename_prefix": "RolePlayGen_portrait_edit",
+      "images": ["11", 0]
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["8", 0],
+      "vae": ["3", 0]
     }
   }
 }

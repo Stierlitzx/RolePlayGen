@@ -1,12 +1,35 @@
 import { FormEvent, useEffect, useState } from 'react';
-import { api, type Language, type Length, type SetupOptions, type Story } from '../api';
+import { api, type Language, type Length, type SetupOptions, type Story, type StoryCreate } from '../api';
 import ErrorBanner from '../components/ErrorBanner';
 import LoadingIndicator from '../components/LoadingIndicator';
+import TopBar from '../components/ui/TopBar';
 
 interface Props {
   onBack: () => void;
   onStarted: (story: Story) => void;
   editingStory?: Story | null;
+}
+
+/** Read a picked file as a data URL, so the backend gets it in one JSON body. */
+export function readImageAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Could not read the picture.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Providers whose model is fixed in .env rather than picked from a list. */
+const FIXED_MODEL_PROVIDERS = ['local', 'groq', 'openrouter', 'mistral'];
+
+function fixedProviderModel(provider: string, options: SetupOptions | null): string {
+  if (!options) return '';
+  if (provider === 'local') return options.local_model ?? '';
+  if (provider === 'groq') return options.groq_model ?? '';
+  if (provider === 'openrouter') return options.openrouter_model ?? '';
+  if (provider === 'mistral') return options.mistral_model ?? '';
+  return '';
 }
 
 export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
@@ -22,9 +45,16 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
   const [heroRole, setHeroRole] = useState(String(initial?.hero_role ?? ''));
   const [heroName, setHeroName] = useState(String(initial?.hero_name ?? ''));
   const [heroAppearance, setHeroAppearance] = useState(String(initial?.hero_appearance ?? ''));
+  // The optional hero photo: read into a data URL on pick and sent with the
+  // form. `null` means "leave the story's current photo alone" (or none at all
+  // for a new story).
+  const [heroImage, setHeroImage] = useState<string | null>(null);
+  const [heroImageName, setHeroImageName] = useState('');
+  const [heroGender, setHeroGender] = useState(String(initial?.hero_gender ?? ''));
   const [length, setLength] = useState<Length>((initial?.length as Length) ?? 'short');
   const [customTurns, setCustomTurns] = useState(Number(initial?.custom_turns ?? 50));
   const [model, setModel] = useState(String(initial?.model ?? ''));
+  const [llmProvider, setLlmProvider] = useState(String(initial?.llm_provider ?? ''));
   const [restrictions, setRestrictions] = useState(String(initial?.content_restrictions ?? ''));
   const [language, setLanguage] = useState<Language>((initial?.language as Language) ?? 'Russian');
   const [customDetails, setCustomDetails] = useState(String(initial?.custom_details ?? ''));
@@ -50,6 +80,8 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
         setAgeRating((current) => current || value.default_age_rating);
         setImageStyle((current) => current || value.default_image_style);
         setNarratorStyle((current) => current || value.default_narrator_style);
+        setLlmProvider((current) => current || value.default_provider);
+        setHeroGender((current) => current || value.default_hero_gender);
         if (!isEditing) {
           setSetting(value.settings[0]);
           setGenres([value.genres[0]]);
@@ -78,6 +110,13 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (genres.length === 0 || starting) return;
+    // A photo that is still being read must not be silently dropped: the story
+    // would be generated from text alone and the player would never know why the
+    // pictures ignore their face.
+    if (heroImageName && !heroImage) {
+      setError('The hero photo is still being read — wait a moment and start again.');
+      return;
+    }
     setStarting(true);
     setError(null);
     const payload = {
@@ -88,9 +127,14 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
       hero_role: heroRole.trim() || null,
       hero_name: heroName.trim() || null,
       hero_appearance: heroAppearance.trim() || null,
+      hero_gender: heroGender || null,
+      ...(heroImage ? { hero_image: heroImage } : {}),
       length,
       custom_turns: length === 'custom' ? customTurns : null,
-      model: model || null,
+      model: FIXED_MODEL_PROVIDERS.includes(llmProvider)
+        ? fixedProviderModel(llmProvider, options) || null
+        : model || null,
+      llm_provider: (llmProvider || null) as StoryCreate['llm_provider'],
       content_restrictions: restrictions.trim() || null,
       language,
       custom_details: customDetails.trim() || null,
@@ -118,30 +162,64 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
   if (loading) return <LoadingIndicator text="Loading story options…" />;
   if (!options) {
     return (
-      <main className="page narrow-page">
-        <ErrorBanner message={error} />
-        <button type="button" onClick={onBack}>Home</button>
-      </main>
+      <div className="page-column">
+        <div className="content-scroll">
+          <ErrorBanner message={error} />
+          <button type="button" onClick={onBack}>Home</button>
+        </div>
+      </div>
     );
   }
 
   return (
-    <main className="page setup-page">
-      <button type="button" className="link-button" onClick={onBack}>← Home</button>
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Story setup</p>
-          <h1>Choose the world</h1>
-        </div>
-      </div>
-      {!options.ai_configured && !options.mock_llm && (
+    <div className="page-column">
+      <TopBar
+        title={isEditing ? 'Edit the beginning' : 'Choose the world'}
+        subtitle="Story setup"
+        actions={
+          <button type="button" onClick={onBack}>
+            ← Back
+          </button>
+        }
+      />
+      <div className="content-scroll">
+      {!options.mock_llm && (llmProvider === '' || llmProvider === 'gemini') && !options.gemini_configured && (
         <div className="warning-banner">
           Gemini is not configured. Add GEMINI_API_KEY to <code>.env</code> (free key at{' '}
-          aistudio.google.com/api-keys), or set <code>MOCK_LLM=true</code> for local development.
+          aistudio.google.com/api-keys), pick another text model source below, or set{' '}
+          <code>MOCK_LLM=true</code> for local development.
+        </div>
+      )}
+      {!options.mock_llm && llmProvider === 'local' && !options.local_configured && (
+        <div className="warning-banner">
+          The local model is not configured. Set <code>OPENAI_BASE_URL</code> and{' '}
+          <code>OPENAI_MODEL</code> in <code>.env</code> and start Ollama / LM Studio, or pick
+          another text model source below.
+        </div>
+      )}
+      {!options.mock_llm && llmProvider === 'groq' && !options.groq_configured && (
+        <div className="warning-banner">
+          Groq is not configured. Add <code>GROQ_API_KEY</code> to <code>.env</code> (free key at{' '}
+          console.groq.com/keys), or pick another text model source below.
+        </div>
+      )}
+      {!options.mock_llm && llmProvider === 'openrouter' && !options.openrouter_configured && (
+        <div className="warning-banner">
+          OpenRouter is not configured. Add <code>OPENROUTER_API_KEY</code> to <code>.env</code>{' '}
+          (key at openrouter.ai/keys), or pick another text model source below.
+        </div>
+      )}
+      {!options.mock_llm && llmProvider === 'mistral' && !options.mistral_configured && (
+        <div className="warning-banner">
+          Mistral is not configured. Add <code>MISTRAL_API_KEY</code> to <code>.env</code> (free
+          Experiment tier key at console.mistral.ai, no card needed), or pick another text model
+          source below.
         </div>
       )}
       <ErrorBanner message={error} onClose={() => setError(null)} />
       <form className="setup-form" onSubmit={(event) => void submit(event)}>
+        <section className="form-section">
+          <h2>World</h2>
         <label>
           Setting
           <select value={setting} onChange={(event) => setSetting(event.target.value)}>
@@ -153,7 +231,7 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
             Custom setting
             <textarea
               value={customSetting}
-              maxLength={1000}
+              maxLength={3000}
               required
               onChange={(event) => setCustomSetting(event.target.value)}
             />
@@ -163,7 +241,7 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
           Custom details (optional)
           <textarea
             value={customDetails}
-            maxLength={5000}
+            maxLength={15000}
             placeholder="Plot premise, tone details, characters you want present, relationships, factions, a conflict to start from…"
             onChange={(event) => setCustomDetails(event.target.value)}
           />
@@ -186,6 +264,84 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
             ))}
           </div>
         </fieldset>
+        </section>
+
+        <section className="form-section">
+          <h2>Hero</h2>
+          <div className="form-grid">
+            <label>
+              Hero name (optional)
+              <input value={heroName} maxLength={200} onChange={(event) => setHeroName(event.target.value)} />
+            </label>
+            <label>
+              Hero gender
+              <select value={heroGender} onChange={(event) => setHeroGender(event.target.value)}>
+                {options.hero_genders.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+          </div>
+          <label>
+            Hero role (optional)
+            <textarea value={heroRole} maxLength={3000} onChange={(event) => setHeroRole(event.target.value)} />
+          </label>
+          <label>
+            Hero appearance (optional — the narrator bases the hero's look and portrait on it)
+            <textarea value={heroAppearance} maxLength={3000} onChange={(event) => setHeroAppearance(event.target.value)} />
+          </label>
+          <label className="hero-photo-field">
+            Hero photo (optional — every scene picture is built around this face)
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                setHeroImageName(file.name);
+                void readImageAsDataUrl(file)
+                  .then(setHeroImage)
+                  .catch((err: unknown) =>
+                    setError(err instanceof Error ? err.message : 'Could not read the picture.'),
+                  );
+              }}
+            />
+            {heroImageName && (
+              <span className="hero-photo-hint">
+                {heroImage ? `Attached: ${heroImageName}` : `Reading ${heroImageName}…`}
+                {isEditing && ' (leave empty to keep the current photo)'}
+              </span>
+            )}
+          </label>
+        </section>
+
+        <section className="form-section">
+          <h2>Language & culture</h2>
+          <div className="form-grid">
+            <label>
+              Story language
+              <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
+                {options.languages.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+            <label>
+              Setting culture
+              <select value={settingCulture} onChange={(event) => setSettingCulture(event.target.value)}>
+                {options.cultures.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+            <label>
+              Character naming culture (optional)
+              <select value={namingCulture} onChange={(event) => setNamingCulture(event.target.value)}>
+                <option value="">Same as setting culture</option>
+                {options.cultures
+                  .filter((item) => item !== 'Match story language')
+                  .map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+          </div>
+        </section>
+
+        <section className="form-section">
+          <h2>Narration &amp; model</h2>
         <div className="form-grid">
           <label>
             Tone
@@ -214,64 +370,51 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
             </label>
           )}
           <label>
-            AI model
-            <select value={model} onChange={(event) => setModel(event.target.value)}>
-              {options.models.map((item) => <option key={item}>{item}</option>)}
-            </select>
-          </label>
-          <label>
-            Hero role (optional)
-            <textarea value={heroRole} maxLength={1000} onChange={(event) => setHeroRole(event.target.value)} />
-          </label>
-          <label>
-            Hero name (optional)
-            <input value={heroName} maxLength={200} onChange={(event) => setHeroName(event.target.value)} />
-          </label>
-          <label>
-            Hero appearance (optional — the narrator bases the hero's look and portrait on it)
-            <textarea value={heroAppearance} maxLength={1000} onChange={(event) => setHeroAppearance(event.target.value)} />
-          </label>
-          <label>
-            Story language
-            <select value={language} onChange={(event) => setLanguage(event.target.value as Language)}>
-              {options.languages.map((item) => <option key={item}>{item}</option>)}
-            </select>
-          </label>
-          <label>
-            Setting culture
-            <select value={settingCulture} onChange={(event) => setSettingCulture(event.target.value)}>
-              {options.cultures.map((item) => <option key={item}>{item}</option>)}
-            </select>
-          </label>
-          <label>
-            Character naming culture (optional)
-            <select value={namingCulture} onChange={(event) => setNamingCulture(event.target.value)}>
-              <option value="">Same as setting culture</option>
-              {options.cultures
-                .filter((item) => item !== 'Match story language')
-                .map((item) => <option key={item}>{item}</option>)}
-            </select>
-          </label>
-          <label>
-            Age rating
+            Text model source
             <select
-              value={ageRating}
+              value={llmProvider}
               onChange={(event) => {
                 const value = event.target.value;
-                setAgeRating(value);
-                if (value !== '18+') {
-                  // adult genres and flags are 18+-only
-                  setExplicitSexual(false);
-                  setGraphicViolence(false);
-                  setGenres((current) =>
-                    current.filter((genre) => !options.adult_genres.includes(genre)),
-                  );
-                }
+                setLlmProvider(value);
+                setModel(
+                  FIXED_MODEL_PROVIDERS.includes(value)
+                    ? fixedProviderModel(value, options)
+                    : options.default_gemini_model,
+                );
               }}
             >
-              {options.age_ratings.map((item) => <option key={item}>{item}</option>)}
+              <option value="gemini">Gemini (cloud)</option>
+              <option value="groq" disabled={!options.groq_configured}>
+                Groq (cloud){options.groq_model ? ` (${options.groq_model})` : ' — not configured'}
+              </option>
+              <option value="openrouter" disabled={!options.openrouter_configured}>
+                OpenRouter (cloud)
+                {options.openrouter_model ? ` (${options.openrouter_model})` : ' — not configured'}
+              </option>
+              <option value="mistral" disabled={!options.mistral_configured}>
+                Mistral (cloud)
+                {options.mistral_model ? ` (${options.mistral_model})` : ' — not configured'}
+              </option>
+              <option value="local" disabled={!options.local_configured}>
+                Local model{options.local_model ? ` (${options.local_model})` : ' — not configured'}
+              </option>
             </select>
           </label>
+          {!FIXED_MODEL_PROVIDERS.includes(llmProvider) ? (
+            <label>
+              AI model
+              <select value={model} onChange={(event) => setModel(event.target.value)}>
+                {options.gemini_models.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+          ) : (
+            <label>
+              AI model
+              <select value={fixedProviderModel(llmProvider, options)} disabled>
+                <option>{fixedProviderModel(llmProvider, options) || 'Set the provider model in .env'}</option>
+              </select>
+            </label>
+          )}
           <label>
             Narrator style
             <select value={narratorStyle} onChange={(event) => setNarratorStyle(event.target.value)}>
@@ -285,6 +428,32 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
             </select>
           </label>
         </div>
+        </section>
+
+        <section className="form-section">
+          <h2>Content rating</h2>
+          <div className="form-grid">
+            <label>
+              Age rating
+              <select
+                value={ageRating}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setAgeRating(value);
+                  if (value !== '18+') {
+                    // adult genres and flags are 18+-only
+                    setExplicitSexual(false);
+                    setGraphicViolence(false);
+                    setGenres((current) =>
+                      current.filter((genre) => !options.adult_genres.includes(genre)),
+                    );
+                  }
+                }}
+              >
+                {options.age_ratings.map((item) => <option key={item}>{item}</option>)}
+              </select>
+            </label>
+          </div>
         {ageRating === '18+' && (
           <div className="adult-options">
             <label className="checkbox-label">
@@ -317,15 +486,17 @@ export default function SetupPage({ onBack, onStarted, editingStory }: Props) {
           Content restrictions (optional)
           <textarea
             value={restrictions}
-            maxLength={2000}
+            maxLength={6000}
             onChange={(event) => setRestrictions(event.target.value)}
           />
         </label>
+        </section>
         <button className="primary start-button" type="submit" disabled={starting || genres.length === 0}>
           {starting ? (isEditing ? 'Saving…' : 'Starting…') : isEditing ? 'Save changes' : 'Start'}
         </button>
       </form>
       {starting && <LoadingIndicator text="Creating the first turn…" />}
-    </main>
+      </div>
+    </div>
   );
 }

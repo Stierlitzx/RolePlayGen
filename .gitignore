@@ -24,3 +24,18 @@ backend/data/
 
 # Build metadata
 *.tsbuildinfo
+
+# Local run artefacts (server output, one-off debug scripts and their logs)
+*.log
+backend/out*.txt
+backend/q1.txt
+backend/debug_*.txt
+backend/debug_tags.py
+build_out.txt
+backend/repair_*.txt
+backend/repair_*.py
+backend/check_*.py
+backend/_zz_tmp_*.py
+backend/package-lock.json
+backend/server_run.*
+*.db.bak

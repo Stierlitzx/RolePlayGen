@@ -65,6 +65,27 @@ export default function ImageBlock({ turn }: Props) {
     });
   };
 
+  /** Repaint with the CURRENT prompt/style: a finished picture was made by an
+   *  older prompt, and only a new job shows what the model draws now. */
+  const [repainting, setRepainting] = useState(false);
+  const repaint = () => {
+    setRepainting(true);
+    setStatus('queued');
+    setUrl(null);
+    setError(null);
+    api
+      .redoTurnImage(turn.id)
+      .then((info) => {
+        setStatus(info.status);
+        if (info.status === 'failed') setError(info.error ?? 'Repaint failed.');
+      })
+      .catch((err: unknown) => {
+        setStatus('failed');
+        setError(err instanceof Error ? err.message : 'Repaint failed.');
+      })
+      .finally(() => setRepainting(false));
+  };
+
   if (status === 'failed') {
     return (
       <div className="image-block image-failed">
@@ -78,6 +99,14 @@ export default function ImageBlock({ turn }: Props) {
     return (
       <div className={`image-block image-done image-${format}`}>
         <ZoomableImage src={url} alt="Scene illustration" style={{ aspectRatio: ASPECT[format] }} />
+        <button
+          type="button"
+          className="link-button image-repaint"
+          onClick={repaint}
+          disabled={repainting}
+        >
+          {repainting ? 'Repainting…' : 'Repaint this picture'}
+        </button>
       </div>
     );
   }

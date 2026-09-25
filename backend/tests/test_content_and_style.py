@@ -69,30 +69,37 @@ def test_scene_prompt_with_style_and_explicit_rating() -> None:
         style_tags="anime style, anime coloring",
     )
     assert prompt.startswith(
-        "masterpiece, best quality, amazing quality, general, anime style, anime coloring, 1girl, red eyes"
+        "anime style, anime coloring, general, "
+        "1girl, standing, medium wide shot, adult, 1girl, red eyes"
     )
+    # The style also closes the prompt, so a long descriptive vocabulary cannot
+    # outvote it (an anime story came back photorealistic without this).
+    assert prompt.endswith("anime style, anime coloring")
 
     explicit_prompt = image_service.assemble_positive_prompt("1girl, nsfw, posing", explicit=True)
-    assert ", explicit," in explicit_prompt
+    assert explicit_prompt.startswith("explicit, ")
     assert "nsfw" in explicit_prompt  # rating tokens pass only when the story allows it
 
 
-def test_build_workflow_appends_style_negative() -> None:
+def test_build_workflow_ignores_negative_extra_qwen_cfg1() -> None:
+    # Qwen-Image-2.1 runs at cfg=1: the sampler output equals the positive
+    # conditioning, so style negatives / the nsfw guard have no node to go to.
     styled = image_service.build_workflow(
         "wide", "test prompt", "prefix", seed=1, negative_extra="realistic, photorealistic"
     )
-    assert styled["7"]["inputs"]["text"].endswith("realistic, photorealistic")
+    assert styled["6"]["inputs"]["prompt"] == "test prompt"
     plain = image_service.build_workflow("wide", "test prompt", "prefix", seed=1)
-    assert "realistic" not in plain["7"]["inputs"]["text"]
+    assert plain["6"]["inputs"]["prompt"] == "test prompt"
 
 
-def _turn_contract_with(characters_json: str) -> str:
+def _turn_contract_with(characters_json: str, hero_json: str | None = None) -> str:
+    hero = f', "hero": {hero_json}' if hero_json else ""
     return (
         '{"narration": "Next.", "choice": {"mode": "locked", "options": '
         '[{"id": "a", "text": "Go"}, {"id": "b", "text": "Stay"}], '
         '"allow_custom": false, "prompt": "Choose"}, '
         '"state": {"scene": "Dock", "summary": "S", "facts": []}, "is_ending": false, '
-        f'"characters": {characters_json}}}'
+        f'"characters": {characters_json}{hero}}}'
     )
 
 
@@ -133,7 +140,10 @@ def test_portrait_update_and_revert(db_session: Session, monkeypatch: pytest.Mon
     jobs = []
     while not image_service._job_queue.empty():
         jobs.append(image_service._job_queue.get_nowait())
-    assert jobs == [("portrait", companion.id)]  # exactly one job for the new look
+    # exactly one portrait job for the new look (the turn's scene illustration
+    # shares the queue — the fallback image prompt keeps turns illustrated)
+    portraits = [job for job in jobs if job[0] == "portrait"]
+    assert portraits == [("portrait", companion.id)]
 
     # Reverting is instant and free: old file restored, no GPU job.
     monkeypatch.setattr(
@@ -148,7 +158,12 @@ def test_portrait_update_and_revert(db_session: Session, monkeypatch: pytest.Mon
     assert companion.portrait_path == f"{story.id}/char_{companion.id}.png"
     assert companion.portrait_status == "done"
     assert "space suit" not in (companion.appearance_tags or "")
-    assert image_service._job_queue.empty()  # no job enqueued for a revert
+    # no PORTRAIT job enqueued for a revert (the turn's scene illustration
+    # still queues — the fallback image prompt keeps every turn illustrated)
+    remaining = []
+    while not image_service._job_queue.empty():
+        remaining.append(image_service._job_queue.get_nowait())
+    assert all(job[0] != "portrait" for job in remaining)
 
 
 def test_portrait_revert_without_history_is_ignored(
@@ -166,6 +181,103 @@ def test_portrait_revert_without_history_is_ignored(
     companion = next(c for c in story.characters if not c.is_hero)
     assert len(companion.portrait_history) == 1
     assert "portrait_revert" in caplog.text
+
+
+def test_hero_look_evolution(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The player character is not frozen in the outfit they happened to wear at
+    # the opening: a persistent change of look repaints the hero's portrait and
+    # the previous look comes back for free.
+    _drain_queue()
+    settings = Settings(mock_llm=True, image_generation_enabled=True)
+    story = story_engine.create_story(db_session, StoryCreate(**payload()), settings)
+    hero = next(c for c in story.characters if c.is_hero)
+    original_tags = hero.appearance_tags
+    hero.portrait_status = "done"
+    hero.portrait_path = f"{story.id}/char_{hero.id}.png"
+    history = [dict(entry) for entry in hero.portrait_history]
+    history[0]["portrait_path"] = hero.portrait_path
+    hero.portrait_history = history
+    db_session.commit()
+    _drain_queue()
+
+    monkeypatch.setattr(
+        story_engine, "call_model",
+        lambda *a, **k: _turn_contract_with(
+            "[]",
+            '{"appearance_tags": "1girl, green eyes, red hair, rough brown cloak, '
+            'pants, adult", "pose": "pulling the cloak closed", '
+            '"expression": "wary", "portrait_update": true}',
+        ),
+    )
+    story_engine.add_turn(db_session, story.id, TurnCreate(option_id="a"), settings)
+    db_session.refresh(hero)
+    assert "brown cloak" in (hero.appearance_tags or "")
+    assert "brown cloak" not in (original_tags or "")
+    assert len(hero.portrait_history) == 2
+    assert hero.portrait_history[-1]["pose"] == "pulling the cloak closed"
+    assert hero.portrait_status == "queued"
+    jobs = []
+    while not image_service._job_queue.empty():
+        jobs.append(image_service._job_queue.get_nowait())
+    assert ("portrait", hero.id) in jobs
+    # The new look is what every later scene image is built from.
+    hero_tags, _ = image_service._scene_appearance_tags(db_session, story.turns[-1])
+    assert "brown cloak" in hero_tags
+
+    # Back to the opening look: the old file returns instantly, no GPU job.
+    monkeypatch.setattr(
+        story_engine, "call_model",
+        lambda *a, **k: _turn_contract_with("[]", '{"portrait_revert": true}'),
+    )
+    story_engine.add_turn(db_session, story.id, TurnCreate(option_id="a"), settings)
+    db_session.refresh(hero)
+    assert len(hero.portrait_history) == 1
+    assert hero.appearance_tags == original_tags
+    assert hero.portrait_path == f"{story.id}/char_{hero.id}.png"
+    assert hero.portrait_status == "done"
+    remaining = []
+    while not image_service._job_queue.empty():
+        remaining.append(image_service._job_queue.get_nowait())
+    assert all(job[0] != "portrait" for job in remaining)
+
+
+def test_hero_revert_without_a_previous_look_is_ignored(
+    db_session: Session, settings: Settings, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    story = story_engine.create_story(db_session, StoryCreate(**payload()), settings)
+    hero = next(c for c in story.characters if c.is_hero)
+    monkeypatch.setattr(
+        story_engine, "call_model",
+        lambda *a, **k: _turn_contract_with("[]", '{"portrait_revert": true}'),
+    )
+    with caplog.at_level("WARNING"):
+        story_engine.add_turn(db_session, story.id, TurnCreate(option_id="a"), settings)
+    db_session.refresh(hero)
+    assert len(hero.portrait_history) == 1  # the opening look is all there is
+    assert "portrait_revert" in caplog.text
+
+
+def test_hero_look_update_and_revert_together_keep_the_update(
+    db_session: Session, settings: Settings, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    # Both flags in one turn is a contract slip, not a lost turn: the update wins
+    # and the odd combination is logged.
+    story = story_engine.create_story(db_session, StoryCreate(**payload()), settings)
+    hero = next(c for c in story.characters if c.is_hero)
+    monkeypatch.setattr(
+        story_engine, "call_model",
+        lambda *a, **k: _turn_contract_with(
+            "[]",
+            '{"appearance_tags": "1girl, green eyes, red hair, cloak, adult", '
+            '"portrait_update": true, "portrait_revert": true}',
+        ),
+    )
+    with caplog.at_level("WARNING"):
+        story_engine.add_turn(db_session, story.id, TurnCreate(option_id="a"), settings)
+    db_session.refresh(hero)
+    assert len(hero.portrait_history) == 2
+    assert "cloak" in (hero.appearance_tags or "")
+    assert "portrait_update and portrait_revert" in caplog.text
 
 
 def test_delete_story_removes_image_folder(tmp_path) -> None:
@@ -209,10 +321,11 @@ def test_negative_extra_keeps_nsfw_guard_below_explicit_18() -> None:
     assert image_service.negative_extra_for("", True) == ""
 
 
-def test_built_workflow_negative_carries_nsfw_guard() -> None:
+def test_built_workflow_ignores_negative_guard_qwen_cfg1() -> None:
     workflow = image_service.build_workflow(
         "wide", "p", "x", seed=1,
         negative_extra=image_service.negative_extra_for("", explicit=False),
     )
-    assert workflow["7"]["inputs"]["text"].endswith("nsfw")
+    assert workflow["8"]["inputs"]["cfg"] == 1
+    assert workflow["6"]["inputs"]["prompt"] == "p"
 
