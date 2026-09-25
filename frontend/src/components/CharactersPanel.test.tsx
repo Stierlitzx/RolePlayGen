@@ -17,6 +17,7 @@ function makeCharacter(overrides: Partial<CharacterInfo>): CharacterInfo {
     portrait_url: null,
     portrait_error: null,
     portrait_build_log: null,
+    portrait_progress: null,
     photo_url: null,
     portrait_history: [],
     created_at: '2026-09-21T00:00:00Z',

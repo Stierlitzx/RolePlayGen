@@ -47,6 +47,7 @@ def _ensure_columns() -> None:
             "image_error": "TEXT",
             "image_prompt_id": "VARCHAR(64)",
             "image_build_log": "TEXT",
+            "image_progress": "INTEGER",
             "characters_in_scene": "JSON",
             "note_text": "TEXT",
             "note_type": "VARCHAR(20)",
@@ -57,6 +58,7 @@ def _ensure_columns() -> None:
             "age": "VARCHAR(60)",
             "portrait_prompt_id": "VARCHAR(64)",
             "portrait_build_log": "TEXT",
+            "portrait_progress": "INTEGER",
             "photo_path": "VARCHAR(500)",
         },
     }

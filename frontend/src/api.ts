@@ -42,6 +42,8 @@ export interface Turn {
   image_error: string | null;
   /** What was sent to the picture model for this turn (mode, steps, prompt). */
   image_build_log: string | null;
+  /** Sampler progress of the running picture, 0-100. */
+  image_progress: number | null;
   created_at: string;
 }
 
@@ -50,6 +52,8 @@ export interface TurnImageInfo {
   format: ImageFormat | null;
   url: string | null;
   error: string | null;
+  /** Sampler progress of the running job, 0-100 (null when not known). */
+  progress: number | null;
 }
 
 export interface Story {
@@ -153,6 +157,8 @@ export interface CharacterInfo {
   photo_url: string | null;
   /** What was sent to the picture model for the last portrait. */
   portrait_build_log: string | null;
+  /** Sampler progress of the running portrait job, 0-100. */
+  portrait_progress: number | null;
   portrait_history: PortraitVersion[];
   created_at: string;
 }

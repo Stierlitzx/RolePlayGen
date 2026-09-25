@@ -17,12 +17,15 @@ export default function ImageBlock({ turn }: Props) {
   const [error, setError] = useState<string | null>(turn.image_error);
   const [format, setFormat] = useState<ImageFormat>(turn.image_format ?? 'wide');
   const [pollFailures, setPollFailures] = useState(0);
+  // Sampler progress (0-100) while the picture is being drawn.
+  const [progress, setProgress] = useState<number | null>(null);
 
   useEffect(() => {
     setStatus(turn.image_status);
     setUrl(turn.image_url);
     setError(turn.image_error);
     setFormat(turn.image_format ?? 'wide');
+    setProgress(turn.image_progress ?? null);
     setPollFailures(0);
   }, [turn.id, turn.image_status, turn.image_url, turn.image_error, turn.image_format]);
 
@@ -38,6 +41,7 @@ export default function ImageBlock({ turn }: Props) {
           setStatus(info.status);
           setUrl(info.url);
           setError(info.error);
+          setProgress(info.progress ?? null);
           if (info.format) setFormat(info.format);
         })
         .catch(() => {
@@ -144,8 +148,26 @@ export default function ImageBlock({ turn }: Props) {
 
   return (
     <div className={`image-block image-loading image-${format}`} style={{ aspectRatio: ASPECT[format] }}>
-      <span className="spinner" aria-hidden="true" />
-      <span>Drawing the scene…</span>
+      {progress !== null ? (
+        <div
+          className="image-progress"
+          role="progressbar"
+          aria-valuenow={progress}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div
+            className="image-progress-bar"
+            style={{ width: `${Math.min(100, Math.max(2, progress))}%` }}
+          />
+          <span className="image-progress-label">Drawing the scene… {progress}%</span>
+        </div>
+      ) : (
+        <>
+          <span className="spinner" aria-hidden="true" />
+          <span>Drawing the scene…</span>
+        </>
+      )}
     </div>
   );
 }

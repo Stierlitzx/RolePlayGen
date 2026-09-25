@@ -240,6 +240,194 @@ def _quality_prefix(explicit: bool) -> list[str]:
     return ["explicit" if explicit else "general"]
 
 
+"""Minimal ComfyUI progress reader (WebSocket, stdlib only).
+
+ComfyUI reports sampler progress only over its WebSocket (`/ws`): a
+`progress` message per step, e.g. `{"value": 10, "max": 25}`. The app has no
+WebSocket dependency and the project adds no libraries for one, so this is a
+small text-frame reader: connect, read, hand the numbers to a callback, stop at
+the end of the job. Anything unexpected (no socket, a masked or binary frame, a
+closed connection) simply ends the progress — the job itself keeps running and
+is still tracked through `/history`, so a missing progress bar never breaks a
+picture.
+"""
+
+import base64
+import json
+import logging
+import os
+import socket
+import struct
+import threading
+import uuid
+from contextlib import contextmanager, nullcontext
+from typing import Any, Callable, Iterator
+from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
+
+_WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def _read_exact(sock: socket.socket, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ConnectionError("closed")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read_frame(sock: socket.socket) -> tuple[int, bytes]:
+    """One unmasked server frame: (opcode, payload)."""
+    first, second = _read_exact(sock, 2)
+    opcode = first & 0x0F
+    length = second & 0x7F
+    if length == 126:
+        length = struct.unpack(">H", _read_exact(sock, 2))[0]
+    elif length == 127:
+        length = struct.unpack(">Q", _read_exact(sock, 8))[0]
+    return opcode, _read_exact(sock, length)
+
+
+class _FrameReader:
+    """Reads text frames off a socket, keeping whatever it already received.
+
+    A socket read returns whatever arrived, so the handshake response and the
+    first WebSocket frames usually share one chunk. Dropping the tail of that
+    chunk desynchronises the stream, and the reader then sees garbage forever —
+    which is exactly what "no progress events" looked like.
+    """
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+        self._buffer = b""
+
+    def _fill(self) -> None:
+        chunk = self._sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("closed")
+        self._buffer += chunk
+
+    def read_headers(self) -> bytes:
+        while b"\r\n\r\n" not in self._buffer:
+            self._fill()
+        headers, _, rest = self._buffer.partition(b"\r\n\r\n")
+        self._buffer = rest
+        return headers
+
+    def read_frame(self) -> tuple[int, bytes]:
+        while len(self._buffer) < 2:
+            self._fill()
+        first, second = self._buffer[0], self._buffer[1]
+        opcode = first & 0x0F
+        length = second & 0x7F
+        offset = 2
+        if length == 126:
+            while len(self._buffer) < offset + 2:
+                self._fill()
+            length = struct.unpack(">H", self._buffer[offset : offset + 2])[0]
+            offset += 2
+        elif length == 127:
+            while len(self._buffer) < offset + 8:
+                self._fill()
+            length = struct.unpack(">Q", self._buffer[offset : offset + 8])[0]
+            offset += 8
+        while len(self._buffer) < offset + length:
+            self._fill()
+        payload = self._buffer[offset : offset + length]
+        self._buffer = self._buffer[offset + length :]
+        return opcode, payload
+
+
+def _handshake(sock: socket.socket, host: str, path: str, client_id: str) -> _FrameReader:
+    key = base64.b64encode(os.urandom(16)).decode()
+    request = (
+        f"GET {path} HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n"
+    )
+    sock.sendall(request.encode())
+    reader = _FrameReader(sock)
+    headers = reader.read_headers()
+    if b"101" not in headers.split(b"\r\n", 1)[0]:
+        raise ConnectionError("upgrade refused")
+    return reader
+
+
+@contextmanager
+def progress_reader(
+    base_url: str,
+    prompt_id: str,
+    on_progress: Callable[[int, int], None],
+    client_id: str | None = None,
+) -> Iterator[threading.Thread]:
+    """Call `on_progress(step, total)` while the job runs; never raise.
+
+    The reader is a daemon thread: a ComfyUI that does not speak WebSocket
+    simply means no progress bar, never a failed picture.
+    """
+    stop = threading.Event()
+
+    def run() -> None:
+        sock: socket.socket | None = None
+        try:
+            parsed = urlparse(base_url)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            client_id = client_id or uuid.uuid4().hex
+            sock = socket.create_connection((host, port), timeout=5)
+            sock.settimeout(poll_seconds)
+            reader = _handshake(sock, f"{host}:{port}", f"/ws?clientId={client_id}", client_id)
+            while not stop.is_set():
+                try:
+                    opcode, payload = reader.read_frame()
+                except (socket.timeout, TimeoutError):
+                    continue
+                except (OSError, ConnectionError, struct.error):
+                    return
+                if opcode == 0x8:  # close
+                    return
+                if opcode != 0x1:  # only text frames carry the events
+                    continue
+                try:
+                    event = json.loads(payload.decode("utf-8", "replace"))
+                except json.JSONDecodeError:
+                    continue
+                kind = event.get("type")
+                data = event.get("data") or {}
+                if kind == "progress" and data.get("prompt_id") == prompt_id:
+                    on_progress(int(data.get("value", 0)), int(data.get("max", 0)))
+                elif kind == "executing" and data.get("prompt_id") == prompt_id:
+                    if data.get("node") is None:  # the job finished
+                        return
+        except Exception:  # noqa: BLE001 - progress is a nicety, never a failure
+            logger.debug("progress reader stopped for %s", prompt_id, exc_info=True)
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+    thread = threading.Thread(target=run, name="comfy-progress", daemon=True)
+    thread.start()
+    try:
+        yield thread
+    finally:
+        stop.set()
+
+
+class ImageGenerationError(RuntimeError):
+    pass
+
+
 class ImageGenerationError(RuntimeError):
     pass
 
@@ -749,9 +937,14 @@ def _client(settings: Settings) -> httpx.Client:
     return httpx.Client(base_url=settings.comfyui_url, timeout=30.0)
 
 
-def submit_job(client: httpx.Client, workflow: dict[str, Any]) -> str:
+def submit_job(client: httpx.Client, workflow: dict[str, Any], client_id: str | None = None) -> str:
     try:
-        response = client.post("/prompt", json={"prompt": workflow, "client_id": str(uuid.uuid4())})
+        # The client_id is the socket subscription key: ComfyUI routes the
+        # progress events of a job to the connection that asked for it, so the
+        # progress reader and this submission must agree on it.
+        response = client.post(
+            "/prompt", json={"prompt": workflow, "client_id": client_id or str(uuid.uuid4())}
+        )
     except httpx.HTTPError as exc:
         raise ImageGenerationError("Image generator is not running") from exc
     if response.status_code != 200:
@@ -780,6 +973,7 @@ def render_job(
     workflow: dict[str, Any],
     settings: Settings,
     persist_prompt_id: Any,
+    on_progress: Any = None,
 ) -> bytes:
     """Run one job end to end and return the image bytes.
 
@@ -788,23 +982,35 @@ def render_job(
     can die with "VRAM grow failed" while the models of the previous job are
     still cached. When that happens the cache is freed and the job is submitted
     ONCE more, instead of leaving the player a dead picture and a guess.
+
+    `on_progress(percent)` is called while the sampler runs, so the UI can show
+    a progress bar instead of an indefinite spinner.
     """
-    for attempt in range(2):
-        if attempt == 0:
-            # An edit job needs the model in VRAM plus the encoded reference; on a
-            # shared card the models of whatever ran last (often the player's own
-            # manual ComfyUI job) are still cached and the sampler then dies with
-            # "VRAM grow failed". Freeing the cache first is cheap and best-effort.
-            _comfyui_free(settings)
-        prompt_id = submit_job(client, workflow)
-        persist_prompt_id(prompt_id)
-        try:
-            return download_image(client, wait_for_result(client, prompt_id, settings.image_timeout_seconds))
-        except ImageGenerationError as exc:
-            if "VRAM" not in str(exc) or attempt == 1:
-                raise
-            logger.warning("image job %s ran out of VRAM; freeing the cache and retrying once", prompt_id)
-            _comfyui_free(settings)
+    client_id = uuid.uuid4().hex
+    # The socket is opened BEFORE the submission: ComfyUI starts streaming the
+    # job's events as soon as it is queued, and a late subscriber misses them.
+    with progress_reader(
+        str(client.base_url), "", on_progress or (lambda *_: None), client_id
+    ):
+        for attempt in range(2):
+            if attempt == 0:
+                # An edit job needs the model in VRAM plus the encoded reference;
+                # on a shared card the models of whatever ran last (often the
+                # player's own manual ComfyUI job) are still cached and the
+                # sampler then dies with "VRAM grow failed".
+                _comfyui_free(settings)
+            prompt_id = submit_job(client, workflow, client_id)
+            persist_prompt_id(prompt_id)
+            try:
+                info = wait_for_result(client, prompt_id, settings.image_timeout_seconds)
+                return download_image(client, info)
+            except ImageGenerationError as exc:
+                if "VRAM" not in str(exc) or attempt == 1:
+                    raise
+                logger.warning(
+                    "image job %s ran out of VRAM; freeing the cache and retrying once", prompt_id
+                )
+                _comfyui_free(settings)
     raise ImageGenerationError("Image generation failed")  # pragma: no cover - loop returns
 
 
@@ -1577,7 +1783,15 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                         turn.image_prompt_id = prompt_id
                         db.commit()
 
-                    data = render_job(client, workflow, settings, remember)
+                    def report(step: int, total: int, turn: Any = turn, db: Any = db) -> None:
+                        # 0-100 for the UI progress bar; written only when the
+                        # number moves, so a 25-step job costs 25 tiny updates.
+                        if total <= 0 or step == turn.image_progress:
+                            return
+                        turn.image_progress = round(step * 100 / total)
+                        db.commit()
+
+                    data = render_job(client, workflow, settings, remember, report)
                 relative = save_image(data, settings, turn.story_id, turn.id)
             turn.image_status = "done"
             turn.image_path = relative
@@ -1857,7 +2071,15 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                         character.portrait_prompt_id = prompt_id
                         db.commit()
 
-                    data = render_job(client, workflow, settings, remember)
+                    def report(
+                        step: int, total: int, character: Any = character, db: Any = db
+                    ) -> None:
+                        if total <= 0 or step == character.portrait_progress:
+                            return
+                        character.portrait_progress = round(step * 100 / total)
+                        db.commit()
+
+                    data = render_job(client, workflow, settings, remember, report)
                 relative = save_portrait(
                     data, settings, character.story_id, character.id,
                     version=max(1, len(character.portrait_history or [])),

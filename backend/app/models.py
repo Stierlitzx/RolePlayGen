@@ -69,6 +69,8 @@ class Turn(Base):
     # "Image log" shows it verbatim, so a picture that looks wrong can be traced
     # to the prompt that produced it.
     image_build_log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Sampler progress of the running job, 0-100 (ComfyUI WebSocket), nullable.
+    image_progress: Mapped[int | None] = mapped_column(Integer, nullable=True)
     characters_in_scene: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -108,6 +110,7 @@ class Character(Base):
     portrait_prompt_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # The same record for portraits, shown in the character card's image log.
     portrait_build_log: Mapped[str | None] = mapped_column(Text, nullable=True)
+    portrait_progress: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # The picture the player uploaded for this character (the Characters tab).
     # It is what the picture generator edits (image_1) and, when the player
     # asked for it, what the portrait card shows.

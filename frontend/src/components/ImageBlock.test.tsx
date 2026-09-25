@@ -21,6 +21,7 @@ function makeTurn(overrides: Partial<Turn>): Turn {
     image_url: null,
     image_error: null,
     image_build_log: null,
+    image_progress: null,
     created_at: '2026-09-21T00:00:00Z',
     ...overrides,
   };

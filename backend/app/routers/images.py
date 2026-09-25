@@ -14,6 +14,7 @@ def _image_payload(turn: Turn) -> dict:
         "format": turn.image_format,
         "url": turn.image_url,
         "error": turn.image_error,
+        "progress": turn.image_progress,
     }
 
 

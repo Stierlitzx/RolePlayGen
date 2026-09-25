@@ -242,6 +242,7 @@ class TurnRead(BaseModel):
     image_error: str | None = None
     # What was actually sent to the picture model for this turn ("Image log").
     image_build_log: str | None = None
+    image_progress: int | None = None
     created_at: datetime
 
 
@@ -348,6 +349,7 @@ class CharacterRead(BaseModel):
     photo_url: str | None = None
     # What was actually sent to the picture model for the last portrait.
     portrait_build_log: str | None = None
+    portrait_progress: int | None = None
     portrait_history: list[PortraitVersionRead] = []
     created_at: datetime
 

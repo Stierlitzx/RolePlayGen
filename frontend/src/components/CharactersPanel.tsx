@@ -31,10 +31,29 @@ function PortraitThumb({ character, zoomable = false }: { character: CharacterIn
     return <img src={character.portrait_url} alt={`Portrait of ${character.name}`} />;
   }
   if (character.portrait_status === 'queued' || character.portrait_status === 'generating') {
+    const percent = character.portrait_progress;
     return (
       <div className="portrait-placeholder image-loading" style={{ aspectRatio: PORTRAIT_ASPECT }}>
-        <span className="spinner" aria-hidden="true" />
-        <span>Drawing…</span>
+        {percent === null || percent === undefined ? (
+          <>
+            <span className="spinner" aria-hidden="true" />
+            <span>Drawing…</span>
+          </>
+        ) : (
+          <div
+            className="image-progress"
+            role="progressbar"
+            aria-valuenow={percent}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className="image-progress-bar"
+              style={{ width: `${Math.min(100, Math.max(2, percent))}%` }}
+            />
+            <span className="image-progress-label">Drawing… {percent}%</span>
+          </div>
+        )}
       </div>
     );
   }
