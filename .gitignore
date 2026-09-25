@@ -42,4 +42,6 @@ backend/server_run.*
 # Local frontend overrides (ports, API target)
 frontend/.env.local
 frontend/vite_dev.log
+frontend/v.txt
+frontend/o.txt
 *.db.bak
