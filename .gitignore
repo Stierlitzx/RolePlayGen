@@ -38,4 +38,8 @@ backend/check_*.py
 backend/_zz_tmp_*.py
 backend/package-lock.json
 backend/server_run.*
+
+# Local frontend overrides (ports, API target)
+frontend/.env.local
+frontend/vite_dev.log
 *.db.bak
