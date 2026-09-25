@@ -65,6 +65,11 @@ export default function ImageBlock({ turn }: Props) {
     });
   };
 
+  // The prompt that produced this picture, right where the picture is: the header
+  // "Image log" panel lists the whole story, but a player who dislikes THIS
+  // picture must not have to go looking for its prompt.
+  const [showLog, setShowLog] = useState(false);
+
   /** Repaint with the CURRENT prompt/style: a finished picture was made by an
    *  older prompt, and only a new job shows what the model draws now. */
   const [repainting, setRepainting] = useState(false);
@@ -99,14 +104,28 @@ export default function ImageBlock({ turn }: Props) {
     return (
       <div className={`image-block image-done image-${format}`}>
         <ZoomableImage src={url} alt="Scene illustration" style={{ aspectRatio: ASPECT[format] }} />
-        <button
-          type="button"
-          className="link-button image-repaint"
-          onClick={repaint}
-          disabled={repainting}
-        >
-          {repainting ? 'Repainting…' : 'Repaint this picture'}
-        </button>
+        <div className="image-block-actions">
+          <button
+            type="button"
+            className="link-button image-repaint"
+            onClick={repaint}
+            disabled={repainting}
+          >
+            {repainting ? 'Repainting…' : 'Repaint this picture'}
+          </button>
+          {turn.image_build_log && (
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => setShowLog((value) => !value)}
+            >
+              {showLog ? 'Hide the prompt ▾' : 'Why does it look like this? ▴'}
+            </button>
+          )}
+        </div>
+        {showLog && turn.image_build_log && (
+          <pre className="image-inline-log">{turn.image_build_log}</pre>
+        )}
       </div>
     );
   }

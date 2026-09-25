@@ -674,6 +674,70 @@ def cancel_job(client: httpx.Client, prompt_id: str) -> None:
         logger.warning("could not cancel ComfyUI job %s: %s", prompt_id, exc)
 
 
+def render_job(
+    client: httpx.Client,
+    workflow: dict[str, Any],
+    settings: Settings,
+    persist_prompt_id: Any,
+) -> bytes:
+    """Run one job end to end and return the image bytes.
+
+    An edit job needs more VRAM than a text-to-image one (the reference is
+    encoded and lives in the sampler's context), and on a shared 8 GB card it
+    can die with "VRAM grow failed" while the models of the previous job are
+    still cached. When that happens the cache is freed and the job is submitted
+    ONCE more, instead of leaving the player a dead picture and a guess.
+    """
+    for attempt in range(2):
+        if attempt == 0:
+            # An edit job needs the model in VRAM plus the encoded reference; on a
+            # shared card the models of whatever ran last (often the player's own
+            # manual ComfyUI job) are still cached and the sampler then dies with
+            # "VRAM grow failed". Freeing the cache first is cheap and best-effort.
+            _comfyui_free(settings)
+        prompt_id = submit_job(client, workflow)
+        persist_prompt_id(prompt_id)
+        try:
+            return download_image(client, wait_for_result(client, prompt_id, settings.image_timeout_seconds))
+        except ImageGenerationError as exc:
+            if "VRAM" not in str(exc) or attempt == 1:
+                raise
+            logger.warning("image job %s ran out of VRAM; freeing the cache and retrying once", prompt_id)
+            _comfyui_free(settings)
+    raise ImageGenerationError("Image generation failed")  # pragma: no cover - loop returns
+
+
+def _history_failure(entry: dict[str, Any]) -> str:
+    """Why a finished ComfyUI job produced no picture, in plain words.
+
+    ComfyUI keeps the cause in `status.messages` as an `execution_error` entry
+    (node type + the exception text). "VRAM grow failed" on an 8 GB card is the
+    common one, and it is worth naming: the player can free the GPU, lower
+    IMAGE_STEPS, or retry — none of which is guessable from "no image".
+    """
+    status = entry.get("status") or {}
+    for message in status.get("messages") or []:
+        value = message.get("value") if isinstance(message, dict) else None
+        if not (isinstance(value, list) and value and value[0] in ("execution_error", "execution_interrupted")):
+            continue
+        error = value[1] if len(value) > 1 and isinstance(value[1], dict) else {}
+        if value[0] == "execution_interrupted":
+            return (
+                "ComfyUI interrupted the job (another job was running, or the queue was "
+                "cleared). Wait for the other picture to finish and press Retry."
+            )
+        node = error.get("node_type") or f"node {error.get('node_id', '?')}"
+        reason = str(error.get("exception_message") or "").strip() or "unknown error"
+        first_line = reason.splitlines()[0]
+        if "vram" in first_line.lower() or "out of memory" in first_line.lower():
+            return (
+                f"The image model ran out of VRAM at {node} ({first_line}). Close other "
+                "GPU-heavy programs, lower IMAGE_STEPS, or press Retry."
+            )
+        return f"ComfyUI failed at {node}: {first_line}"
+    return "ComfyUI finished but produced no image"
+
+
 def wait_for_result(client: httpx.Client, prompt_id: str, timeout_seconds: int) -> dict[str, str]:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -684,11 +748,16 @@ def wait_for_result(client: httpx.Client, prompt_id: str, timeout_seconds: int) 
         if response.status_code == 200:
             history = response.json()
             if prompt_id in history:
-                outputs = history[prompt_id].get("outputs", {})
+                entry = history[prompt_id]
+                outputs = entry.get("outputs", {})
                 images = outputs.get("10", {}).get("images", [])
                 if images:
                     return images[0]
-                raise ImageGenerationError("ComfyUI finished but produced no image")
+                # ComfyUI records a failed run (out of VRAM, a bad node input, a
+                # missing model) in the history entry. Saying "no image" and
+                # hiding the reason is what made a dead portrait unexplainable,
+                # so the real message is passed on to the player.
+                raise ImageGenerationError(_history_failure(entry))
         time.sleep(1.5)
     cancel_job(client, prompt_id)
     raise ImageGenerationError(f"Image generation timed out after {timeout_seconds}s")
@@ -1416,7 +1485,6 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                                 "turn %s: no portrait reference applied (mode=%s)",
                                 turn.id, settings.image_reference_mode,
                             )
-                    prompt_id = submit_job(client, workflow)
                     # What the picture model was told, kept for the "Image log"
                     # button: a wrong-looking picture has to be traceable to the
                     # exact prompt that produced it.
@@ -1427,14 +1495,16 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                         int(workflow["8"]["inputs"].get("seed", 0)),
                         reference_names,
                     )
-                    # Persisted BEFORE waiting: if the app dies while ComfyUI is
-                    # still drawing, the next start adopts this job instead of
-                    # discarding the picture and offering a Retry (see
-                    # reset_interrupted_turns).
-                    turn.image_prompt_id = prompt_id
-                    db.commit()
-                    image_info = wait_for_result(client, prompt_id, settings.image_timeout_seconds)
-                    data = download_image(client, image_info)
+
+                    def remember(prompt_id: str, turn: Any = turn, db: Any = db) -> None:
+                        # Persisted BEFORE waiting: if the app dies while ComfyUI is
+                        # still drawing, the next start adopts this job instead of
+                        # discarding the picture and offering a Retry (see
+                        # reset_interrupted_turns).
+                        turn.image_prompt_id = prompt_id
+                        db.commit()
+
+                    data = render_job(client, workflow, settings, remember)
                 relative = save_image(data, settings, turn.story_id, turn.id)
             turn.image_status = "done"
             turn.image_path = relative
@@ -1667,7 +1737,6 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                             steps=settings.image_steps,
                             seed=settings.image_seed,
                         )
-                    prompt_id = submit_job(client, workflow)
                     # The same record as for scenes, shown in the character card.
                     character.portrait_build_log = format_build_log(
                         build_mode,
@@ -1676,12 +1745,14 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                         int(workflow["8"]["inputs"].get("seed", 0)),
                         [f"portrait_base_{character.id}.png"] if reference_bytes else [],
                     )
-                    # Persisted before waiting, exactly like a scene job: a
-                    # restart mid-render must adopt this portrait, not repaint it.
-                    character.portrait_prompt_id = prompt_id
-                    db.commit()
-                    image_info = wait_for_result(client, prompt_id, settings.image_timeout_seconds)
-                    data = download_image(client, image_info)
+
+                    def remember(prompt_id: str, character: Any = character, db: Any = db) -> None:
+                        # Persisted before waiting, exactly like a scene job: a
+                        # restart mid-render must adopt this portrait, not repaint it.
+                        character.portrait_prompt_id = prompt_id
+                        db.commit()
+
+                    data = render_job(client, workflow, settings, remember)
                 relative = save_portrait(
                     data, settings, character.story_id, character.id,
                     version=max(1, len(character.portrait_history or [])),

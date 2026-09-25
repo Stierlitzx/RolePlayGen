@@ -43,10 +43,9 @@ class Settings(BaseSettings):
     # ~12 Qwen-Image starts losing detail (hands, fabric, small props), so 16 is
     # the sensible floor for a comfortable speed/quality trade-off.
     image_steps: int = 25
-    # One seed for every picture. A fixed seed makes the same prompt reproduce the
-    # same picture, so "repaint" and "the same scene again" mean what they say
-    # instead of a fresh roll of the dice.
-    image_seed: int = 0
+    # The seed is FIXED for every picture (IMAGE_SEED) and matches the value the
+    # bundled workflow files carry, so the same prompt reproduces the same image.
+    image_seed: int = 593103825222985
     # Reference-image feeding (optional, requires LoadImage nodes added to the
     # ComfyUI workflows by the user). "off" disables it entirely; "img2img"
     # also lowers the first sampler's denoise so the reference drives the look.

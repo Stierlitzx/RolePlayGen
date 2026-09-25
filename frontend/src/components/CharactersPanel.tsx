@@ -51,6 +51,10 @@ export default function CharactersPanel({ storyId, refreshKey = 0, onCharacterUp
   const [error, setError] = useState<string | null>(null);
   // True while the player's own picture is being uploaded.
   const [uploading, setUploading] = useState(false);
+  // One place that shows the prompt behind EVERY character's last portrait, not
+  // only the card that happens to be open: "why does this face look like that"
+  // is a question about the whole cast.
+  const [showLogs, setShowLogs] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,6 +138,33 @@ export default function CharactersPanel({ storyId, refreshKey = 0, onCharacterUp
         <p className="progress-note characters-panel-warning">
           {error} — showing the last known list.
         </p>
+      )}
+      <button
+        type="button"
+        className="link-button characters-logs-toggle"
+        onClick={() => setShowLogs((value) => !value)}
+      >
+        {showLogs
+          ? 'Hide all image logs ▾'
+          : `Image logs — what the picture model was told (${characters.filter((c) => c.portrait_build_log).length}) ▴`}
+      </button>
+      {showLogs && (
+        <div className="image-log-list characters-logs">
+          {characters.map((character) =>
+            character.portrait_build_log ? (
+              <details key={character.id} className="image-log-entry">
+                <summary>
+                  {character.name}
+                  {character.portrait_status === 'failed' && ' — FAILED'}
+                </summary>
+                <pre>{character.portrait_build_log}</pre>
+                {character.portrait_error && (
+                  <p className="image-log-error">Why it failed: {character.portrait_error}</p>
+                )}
+              </details>
+            ) : null,
+          )}
+        </div>
       )}
       <div className="character-list">
         {characters.map((character) => (
