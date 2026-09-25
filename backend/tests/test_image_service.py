@@ -138,7 +138,7 @@ def test_reset_interrupted_turns(db_session, monkeypatch) -> None:
     count = image_service.reset_interrupted_turns()
     assert count == 2
     statuses = [t.image_status for t in db_session.query(Turn).order_by(Turn.index).all()]
-    assert statuses == ["failed", "failed", "done"]
+    assert statuses == ["queued", "queued", "done"]  # a forgotten job is drawn again, not lost
 
 def test_wait_for_result_timeout_cancels_running_job() -> None:
     calls: list[tuple[str, str]] = []
@@ -350,7 +350,7 @@ def test_reset_resumes_a_live_job_instead_of_failing_it(
     while not image_service._job_queue.empty():
         jobs.append(image_service._job_queue.get_nowait())
     assert ("resume_scene", good.id) in jobs
-    assert gone.image_status == "failed"  # ComfyUI forgot it: honest Retry
+    assert gone.image_status == "queued"  # ComfyUI forgot it: drawn again from the stored prompt
     assert gone.image_prompt_id is None
 
 

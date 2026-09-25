@@ -8,14 +8,6 @@ Three requests from the player, all about the pictures.
 - **One seed for every picture** (`IMAGE_SEED`, default 0). Fixed seeds make "repaint" mean what it says, and they are what makes the next item possible at all.
 - **The image log was empty for the whole story.** The log is written when a picture is drawn, so every picture made before the feature had none. `ensure_build_logs` / `ensure_portrait_build_logs` now rebuild the log on read from the stored scene prompt and the stored looks — reproducible precisely because the seed is fixed — and label it `rebuilt from the stored …` so it never pretends to be the historical record. A log button that is empty for most of a story reads as broken.
 
-## 2026-09-26: Ages in picture prompts, one fixed seed, and a log for every picture
-
-Three requests from the player, all about the pictures.
-
-- **A mother came back as a teenager.** `1girl, adult` says nothing about how old someone is, and the character report had no field for it. The narrator now reports `age` in rough ENGLISH WORDS ("a woman in her fifties", "a child of about eight"); the backend stores it on `Character.age` (a nullable VARCHAR(60), added to the startup `ALTER TABLE` list) and splices it into the portrait prompt and into the scene anchors. Three deliberate boundaries: the value is stored once and kept (a later report that omits it must not make a 50-year-old look 25 again), it is **not** part of `CharacterRead` so the player never sees a field they did not learn in the story, and a creature with no human age (a cat, a dragon) reports nothing while an immortal reports "ageless" — the prompt simply gets nothing extra.
-- **One seed for every picture** (`IMAGE_SEED`, default 0). Fixed seeds make "repaint" mean what it says, and they are what makes the next item possible at all.
-- **The image log was empty for the whole story.** The log is written when a picture is drawn, so every picture made before the feature had none. `ensure_build_logs` / `ensure_portrait_build_logs` now rebuild the log on read from the stored scene prompt and the stored looks — reproducible precisely because the seed is fixed — and label it `rebuilt from the stored …` so it never pretends to be the historical record. A log button that is empty for most of a story reads as broken.
-
 ## 2026-09-26: The hero's own photo never reached the hero's portrait
 
 Reported as "the AI generated my character again even though I gave a picture". The picture WAS there — the search order was wrong.
@@ -43,6 +35,13 @@ Session request: the new ComfyUI templates (Qwen-Image-2.1 "image → image", te
 - **A running story accepts exactly one change: the hero photo.** `update_story` freezes every other field after the first turn, but swapping the picture the scenes are built from must stay possible, so `hero_image` is excluded from the mismatch check.
 - **Anything without a photo behaves exactly as before.** No upload → the old tag-only graph, the old img2img rules, the old prompt. The feature is opt-in by uploading a picture, not by flipping a switch that could surprise an existing story.
 - **Steps are a setting now.** `IMAGE_STEPS` (default 25, the shipped value) because render time is roughly linear in it: 16 is about 1.5x faster and is the practical floor before Qwen-Image starts losing hands and small props.
+
+## 2026-09-26: A restart must not cost a picture, and a new turn must bring its log
+
+Two defects the player hit on a story interrupted by a backend restart.
+
+- **Every in-flight picture came back as "Retry".** `reset_interrupted_turns` treated a job ComfyUI no longer knows as a failure (`status=failed`, "Interrupted"), so a restart — a completely normal thing to do — turned every scene and portrait that happened to be drawing into a dead card the player had to rescue by hand. Now: an output that exists is adopted, a job ComfyUI still runs is waited for, and a job it forgot is **re-queued** — the prompt is rebuilt from the stored scene prompt and `IMAGE_SEED` is fixed, so the same picture comes out on its own. Verified on the live database: the turn that had failed with "Interrupted" went back to `generating` by itself after the restart.
+- **The image log only appeared after Ctrl+R.** The log of a turn is rebuilt on `GET /api/stories/{id}`, but a turn created in the browser is appended from the `POST /stories/{id}/turns` response, which carried no log — so the panel stayed empty for every new turn until a full reload. `create_turn` now fills the log for the turn it returns.
 
 ## 2026-09-26: Danbooru tags out, natural-language captions in
 

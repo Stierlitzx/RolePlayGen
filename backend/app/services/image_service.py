@@ -2247,12 +2247,12 @@ def reset_interrupted_turns(settings: Settings | None = None) -> int:
     """On startup: pick interrupted image jobs back up instead of discarding them.
 
     A turn or character stuck in queued/generating was interrupted by the app's
-    restart, but the ComfyUI job itself keeps running. Its persisted job id says
-    which case it is: an output that already exists on the generator's side is
-    adopted, and a job that is still queued or running is waited for — the card
-    keeps saying "Drawing…" instead of offering a Retry that would paint a
-    SECOND picture while the first one is still being drawn. Only a job ComfyUI
-    no longer knows about becomes failed; a file already on disk heals to done.
+    restart. Its persisted job id says which case it is: an output that already
+    exists on the generator's side is adopted, a job that is still queued or
+    running is waited for, and a job ComfyUI no longer knows about is simply
+    drawn again — the prompt is rebuilt from the stored one and the seed is
+    fixed, so the same picture comes out. A restart is a normal thing to do and
+    must never cost the player a picture. A file already on disk heals to done.
     """
     settings = settings or get_settings()
     db = SessionLocal()
@@ -2280,9 +2280,20 @@ def reset_interrupted_turns(settings: Settings | None = None) -> int:
                     turn.image_error = None
                     enqueue_resume_turn_image(turn.id)
                     continue
-                turn.image_status = "failed"
-                turn.image_error = "Interrupted"
+                # ComfyUI forgot the job (it was interrupted, or the queue was
+                # cleared). Failing it dumped a "Retry" card on the player for
+                # every picture that happened to be in flight during a restart —
+                # and a restart is a normal thing to do. The prompt is rebuilt
+                # from the stored scene prompt and the seed is fixed, so the same
+                # picture comes out: re-queue it instead of losing it.
+                logger.info(
+                    "turn %s: the generator forgot job %s; drawing it again",
+                    turn.id, turn.image_prompt_id,
+                )
+                turn.image_status = "queued"
+                turn.image_error = None
                 turn.image_prompt_id = None
+                enqueue_turn_image(turn.id)
             for character in db.query(Character).filter(
                 Character.portrait_status.in_(["queued", "generating"])
             ).all():

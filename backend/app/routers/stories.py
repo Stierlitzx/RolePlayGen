@@ -189,7 +189,12 @@ def create_turn(
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> object:
-    return story_engine.add_turn(db, story_id, payload, settings)
+    turn = story_engine.add_turn(db, story_id, payload, settings)
+    # The new turn is appended to the story in the browser, so its image log has
+    # to travel with this response: without it the "Image log" panel only learns
+    # about a turn after a full reload of the story.
+    image_service.ensure_build_logs(db, [turn], settings)
+    return turn
 
 
 @router.delete("/stories/{story_id}/pinned-facts/{index}", response_model=PinnedFactsRead)
