@@ -30,16 +30,28 @@ class Choice(BaseModel):
 
     @model_validator(mode="after")
     def validate_mode(self) -> "Choice":
+        """A mode says how many options to offer, never what the player may type.
+
+        `allow_custom` used to be tied to the mode: `open` required it true and
+        `locked`/`binary` required it false, so a locked turn physically could
+        not offer a custom action — the field disappeared from the UI and the
+        backend rejected the input, leaving the player to pick one of the
+        narrator's options or nothing. The modes now constrain the option count
+        only, and `allow_custom` is forced true: writing your own action is the
+        player's, on every turn.
+        """
         count = len(self.options)
-        if self.mode == "open" and not (3 <= count <= 4 and self.allow_custom):
-            raise ValueError("open mode requires 3-4 options and allow_custom=true")
-        if self.mode == "locked" and not (2 <= count <= 4 and not self.allow_custom):
-            raise ValueError("locked mode requires 2-4 options and allow_custom=false")
-        if self.mode == "binary" and not (count == 2 and not self.allow_custom):
-            raise ValueError("binary mode requires exactly 2 options and allow_custom=false")
+        if self.mode == "open" and not 3 <= count <= 4:
+            raise ValueError("open mode requires 3-4 options")
+        if self.mode == "locked" and not 2 <= count <= 4:
+            raise ValueError("locked mode requires 2-4 options")
+        if self.mode == "binary" and count != 2:
+            raise ValueError("binary mode requires exactly 2 options")
         expected_ids = ["a", "b", "c", "d"][:count]
         if [option.id for option in self.options] != expected_ids:
             raise ValueError("option ids must be consecutive letters starting with a")
+        # Whatever the narrator sent, the player always keeps the input field.
+        self.allow_custom = True
         return self
 
 
@@ -238,12 +250,31 @@ class TurnRead(BaseModel):
     is_ending: bool
     image_status: str = "none"
     image_format: str | None = None
+    # The scene text, so the player can re-aim a picture. `image_prompt` is what
+    # the narrator wrote; `image_prompt_override` is the player's own wording when
+    # they have set one (the picture uses the override).
+    image_prompt: str | None = None
+    image_prompt_override: str | None = None
     image_url: str | None = None
     image_error: str | None = None
     # What was actually sent to the picture model for this turn ("Image log").
     image_build_log: str | None = None
     image_progress: int | None = None
     created_at: datetime
+
+    @field_validator("choice", mode="before")
+    @classmethod
+    def _always_allow_custom(cls, value: Any) -> Any:
+        """Report `allow_custom: true` for every stored turn, however old.
+
+        `choice` is the raw JSON column, so it never passes through
+        `Choice.validate_mode` on the way out. A turn saved before that rule
+        changed would otherwise keep telling the UI that a custom action is not
+        allowed, and the input row would stay hidden for the rest of the story.
+        """
+        if isinstance(value, dict):
+            return {**value, "allow_custom": True}
+        return value
 
 
 class StoryRead(BaseModel):
@@ -341,6 +372,10 @@ class CharacterRead(BaseModel):
     relationship: str | None
     description: str | None
     first_seen_turn_id: int | None = None
+    # The look itself, so the Characters tab can offer an editor for it. It was
+    # never exposed before: the narrator owned the look and the player could only
+    # repaint what it produced.
+    appearance_tags: str | None = None
     portrait_status: str
     portrait_url: str | None
     portrait_error: str | None
@@ -353,24 +388,78 @@ class CharacterRead(BaseModel):
     portrait_history: list[PortraitVersionRead] = []
     created_at: datetime
 
-    @field_validator("portrait_history", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _map_history(cls, value: Any) -> list[dict[str, Any]]:
-        """Raw JSON entries ({appearance_tags, pose, expression, portrait_path,
-        turn_id}) become gallery items with media URLs; the last entry is the
-        current look. Entries without a file yet (still generating) get a null
-        URL and are skipped by the UI."""
-        entries = value if isinstance(value, list) else []
-        result = []
+    def _map_history(cls, value: Any) -> Any:
+        """Turn the raw history JSON into gallery items with versioned media URLs.
+
+        Raw entries are `{appearance_tags, pose, expression, portrait_path,
+        turn_id}`; the last one is the current look. An entry without a file yet
+        (still generating) gets a null URL and the UI skips it.
+
+        Each URL carries `?v=<portrait_version>`: a past look re-painted at its
+        own version OVERWRITES its file, and without a version the gallery would
+        keep showing the face the player just replaced. The version is read from
+        the row here because a field validator cannot see the sibling fields.
+
+        `CharacterRead.model_validate(character)` is handed the SQLAlchemy row
+        itself (`from_attributes`), so this runs before Pydantic reads anything
+        and has to work from the object as well as from a dict.
+        """
+        version = int(getattr_or(value, "portrait_version", 0) or 0)
+        entries = getattr_or(value, "portrait_history", None)
+        entries = entries if isinstance(entries, list) else []
+        gallery = []
         for index, entry in enumerate(entries):
             if not isinstance(entry, dict):
                 continue
             path = entry.get("portrait_path")
-            result.append(
+            gallery.append(
                 {
                     "turn_id": entry.get("turn_id"),
-                    "portrait_url": f"/media/{path}" if path else None,
+                    "portrait_url": f"/media/{path}?v={version}" if path else None,
                     "current": index == len(entries) - 1,
                 }
             )
-        return result
+        if isinstance(value, dict):
+            return {**value, "portrait_history": gallery}
+        # A model row: copy it into a dict, since the field now holds gallery
+        # items instead of the raw history JSON.
+        data = {name: getattr_or(value, name) for name in cls.model_fields}
+        data["portrait_history"] = gallery
+        return data
+
+
+class CharacterLookUpdate(BaseModel):
+    """The player rewriting a character's look by hand (Characters tab).
+
+    Free English text, not tags: the narrator is told the same thing in the same
+    words, and the backend trims it to an identity anchor exactly as it trims a
+    narrator-supplied one.
+    """
+
+    appearance_tags: str = Field(min_length=1, max_length=1000)
+    #: Keep the previous look in "Past looks" (default). `false` rewrites the
+    #: current one in place, so the gallery does not grow on every tweak.
+    keep_history: bool = True
+    #: Repaint immediately. `false` only stores the new look.
+    repaint: bool = True
+
+
+class ScenePromptUpdate(BaseModel):
+    """The player editing a turn's scene prompt before repainting it.
+
+    Stored on the turn, so the picture, its build log and any later repaint all
+    use it. Reverting to the narrator's own text is done with an empty string,
+    which clears the override rather than blanking the prompt.
+    """
+
+    #: The scene sentence. Empty = drop the override, go back to the stored one.
+    prompt: str = Field(default="", max_length=2000)
+
+
+def getattr_or(source: Any, name: str, default: Any = None) -> Any:
+    """`getattr` that also reads a dict, so one helper serves rows and dicts."""
+    if isinstance(source, dict):
+        return source.get(name, default)
+    return getattr(source, name, default)

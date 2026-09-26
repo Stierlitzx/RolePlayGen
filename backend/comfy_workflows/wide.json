@@ -26,18 +26,22 @@
       "lora_name": "Pornmaster_QI2.1_Breasts_Slider_V1.safetensors",
       "strength_model": 1.0,
       "strength_clip": 1.0,
-      "model": ["1", 0],
-      "clip": ["2", 0]
+      "model": [
+        "1",
+        0
+      ],
+      "clip": [
+        "2",
+        0
+      ]
     }
   },
   "5": {
-    "class_type": "LoraLoader",
+    "class_type": "ResolutionSelector",
     "inputs": {
-      "lora_name": "NSFW Qwen Lora.safetensors",
-      "strength_model": 1.0,
-      "strength_clip": 1.0,
-      "model": ["4", 0],
-      "clip": ["4", 1]
+      "aspect_ratio": "16:9 (Widescreen)",
+      "megapixels": 1.5,
+      "multiple": 8
     }
   },
   "6": {
@@ -46,14 +50,23 @@
       "prompt": "",
       "negative_prompt": "",
       "resolution": 1024,
-      "clip": ["5", 1]
+      "clip": [
+        "4",
+        1
+      ]
     }
   },
   "7": {
     "class_type": "EmptyLatentImage",
     "inputs": {
-      "width": 1568,
-      "height": 880,
+      "width": [
+        "5",
+        0
+      ],
+      "height": [
+        "5",
+        1
+      ],
       "batch_size": 1
     }
   },
@@ -66,24 +79,48 @@
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1,
-      "model": ["5", 0],
-      "positive": ["6", 0],
-      "negative": ["6", 1],
-      "latent_image": ["7", 0]
+      "model": [
+        "4",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "6",
+        1
+      ],
+      "latent_image": [
+        "7",
+        0
+      ]
     }
   },
   "9": {
     "class_type": "VAEDecode",
     "inputs": {
-      "samples": ["8", 0],
-      "vae": ["3", 0]
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
     }
   },
   "10": {
-    "class_type": "SaveImage",
+    "class_type": "SaveImageAdvanced",
     "inputs": {
       "filename_prefix": "RolePlayGen_landscape",
-      "images": ["9", 0]
+      "format": "png",
+      "format.bit_depth": "8-bit",
+      "format.input_color_space": "sRGB",
+      "images": [
+        "9",
+        0
+      ]
     }
   }
 }

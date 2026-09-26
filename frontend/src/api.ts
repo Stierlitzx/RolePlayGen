@@ -38,6 +38,10 @@ export interface Turn {
   is_ending: boolean;
   image_status: ImageStatus;
   image_format: ImageFormat | null;
+  /** The narrator's own scene text for this picture. */
+  image_prompt?: string | null;
+  /** The player's own wording, when set; the picture uses this instead. */
+  image_prompt_override?: string | null;
   image_url: string | null;
   image_error: string | null;
   /** What was sent to the picture model for this turn (mode, steps, prompt). */
@@ -150,6 +154,8 @@ export interface CharacterInfo {
   relationship: string | null;
   description: string | null;
   first_seen_turn_id: number | null;
+  /** The character's look, editable in the Characters tab. */
+  appearance_tags?: string | null;
   portrait_status: ImageStatus;
   portrait_url: string | null;
   portrait_error: string | null;
@@ -226,6 +232,13 @@ export const api = {
     request<TurnImageInfo>(`/turns/${turnId}/image/redo`, { method: 'POST' }),
   retryTurnImage: (turnId: number) =>
     request<TurnImageInfo>(`/turns/${turnId}/image/retry`, { method: 'POST' }),
+  /** Re-aim a picture with the player's own scene wording and repaint it. An
+   *  empty prompt clears the override and goes back to the narrator's own. */
+  updateTurnImagePrompt: (turnId: number, prompt: string) =>
+    request<TurnImageInfo>(`/turns/${turnId}/image/prompt`, {
+      method: 'PATCH',
+      body: JSON.stringify({ prompt }),
+    }, LLM_TIMEOUT_MS),
   characters: (storyId: number) =>
     request<CharacterInfo[]>(`/stories/${storyId}/characters`, undefined, POLL_TIMEOUT_MS),
   character: (characterId: number) =>
@@ -241,6 +254,20 @@ export const api = {
     }),
   retryCharacterPortrait: (characterId: number) =>
     request<CharacterInfo>(`/characters/${characterId}/portrait/retry`, { method: 'POST' }),
+  /** Rewrite a character's look by hand and repaint the card. */
+  updateCharacterLook: (
+    characterId: number,
+    appearanceTags: string,
+    options: { keepHistory?: boolean; repaint?: boolean } = {},
+  ) =>
+    request<CharacterInfo>(`/characters/${characterId}/look`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        appearance_tags: appearanceTags,
+        keep_history: options.keepHistory ?? true,
+        repaint: options.repaint ?? true,
+      }),
+    }, LLM_TIMEOUT_MS),
   deletePinnedFact: (storyId: number, index: number) =>
     request<{ pinned_facts: string[] }>(`/stories/${storyId}/pinned-facts/${index}`, { method: 'DELETE' }),
   deleteStory: (id: number) => request<void>(`/stories/${id}`, { method: 'DELETE' }),

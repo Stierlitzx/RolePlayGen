@@ -31,8 +31,76 @@ logger = logging.getLogger(__name__)
 WORKFLOWS_DIR = Path(__file__).resolve().parents[2] / "comfy_workflows"
 FORMATS = ("portrait", "wide")
 # Qwen-Image-2.1, single pass (no hires-fix): one TextEncode node carries the
-# prompt (positive + an unused negative input), one sampler, one SaveImage.
-REQUIRED_NODES = {"6": "TextEncodeQwenImage21", "8": "KSampler", "10": "SaveImage"}
+# prompt (positive + an unused negative input), one sampler, one save.
+#
+# The save node is the user's `SaveImageAdvanced` (it writes an explicit
+# png/8-bit/sRGB instead of letting ComfyUI pick), and the canvas is produced by
+# a `ResolutionSelector` rather than by numbers typed into EmptyLatentImage — see
+# `workflow_resolution` for why the backend still has to be able to read it.
+REQUIRED_NODES = {
+    "6": "TextEncodeQwenImage21",
+    "8": "KSampler",
+    "10": "SaveImageAdvanced",
+}
+# Node ids of the canvas pair in every bundled workflow.
+LATENT_NODE = "7"
+RESOLUTION_NODE = "5"
+# The aspect ratios the two formats use, and the size the selector falls back to
+# when its own inputs are unreadable (a hand-edited workflow, a custom node
+# version that renames them). The wide/portrait defaults match the values the
+# selector produces for `megapixels: 1.5`.
+FALLBACK_SIZES = {"wide": (1568, 880), "portrait": (880, 1320)}
+
+
+def workflow_resolution(workflow: dict[str, Any], image_format: str) -> tuple[int, int]:
+    """The canvas a workflow will actually render at, as (width, height).
+
+    The canvas no longer sits in `EmptyLatentImage` as two plain numbers: the
+    workflow wires it from a `ResolutionSelector` (`aspect_ratio` + `megapixels`),
+    so the numbers only exist inside ComfyUI. The img2img chain still has to
+    scale a reference picture to exactly that size before encoding it, or the
+    latent it produces does not match the one the sampler was built for. So the
+    selector's own settings are read and resolved here, and the fallback keeps a
+    hand-edited workflow working instead of crashing a generation.
+    """
+    latent = workflow.get(LATENT_NODE, {}).get("inputs", {})
+    width, height = latent.get("width"), latent.get("height")
+    if isinstance(width, int) and isinstance(height, int):
+        return width, height
+    selector = workflow.get(RESOLUTION_NODE, {}).get("inputs", {})
+    megapixels = selector.get("megapixels")
+    ratio = _parse_aspect_ratio(str(selector.get("aspect_ratio", "")))
+    if not isinstance(megapixels, (int, float)) or megapixels <= 0 or ratio is None:
+        logger.warning(
+            "workflow canvas is not readable (%s); falling back to the %s default",
+            selector,
+            image_format,
+        )
+        return FALLBACK_SIZES.get(image_format, FALLBACK_SIZES["wide"])
+    return _size_for(megapixels, ratio)
+
+
+def _parse_aspect_ratio(label: str) -> tuple[int, int] | None:
+    """`"16:9 (Widescreen)"` -> (16, 9); None when the label has no ratio."""
+    match = re.match(r"\s*(\d+)\s*:\s*(\d+)", label)
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _size_for(megapixels: float, ratio: tuple[int, int]) -> tuple[int, int]:
+    """The pixel size a `ResolutionSelector` produces for this budget.
+
+    A megapixel budget and an aspect ratio give one free number, so the width is
+    derived and the height follows the ratio. Rounded to a multiple of 8 because
+    that is what every diffusion UNet wants and an odd width is silently padded
+    by ComfyUI anyway.
+    """
+    ratio_w, ratio_h = ratio
+    total = megapixels * 1_000_000
+    width = int(round((total * ratio_w / ratio_h) ** 0.5 / 8) * 8)
+    height = int(round((total * ratio_h / ratio_w) ** 0.5 / 8) * 8)
+    return max(width, 8), max(height, 8)
 
 # The SDXL-era quality prefix ("masterpiece, best quality, amazing quality") is
 # GONE. Qwen-Image-2.1 reads natural language and those tags dragged it into the
@@ -438,6 +506,35 @@ class ImageGenerationError(RuntimeError):
 _BOILERPLATE_TAGS = {"solo", "adult", "other", "1other", "look_at_viewer"}
 _PERSON_COUNT_TAG = re.compile(r"^\d+\s*(girls?|boys?|others?)$", re.IGNORECASE)
 
+# The gender tag, rendered as a word. `clean_phrase` DROPS the person-count
+# boilerplate above (a caption states who is in the frame, so "1girl" is
+# redundant there), but `look_anchor` keeps the gender: a stored look is
+# spliced as a bare clause with no sentence around it, and without it an elven
+# heroine is drawn as a man.
+_GENDER_TAG = re.compile(r"^(\d*)(girls?|boys?|others?)$", re.IGNORECASE)
+_NUMBER_WORDS = {
+    "1": "one", "2": "two", "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight",
+}
+_DROPPED_TAGS = {"solo", "other", "1other", "look_at_viewer"}
+
+
+def _plain_tag(tag: str) -> str:
+    """One stored tag as a word or a phrase (`1girl` -> "a girl")."""
+    lowered = tag.lower()
+    if lowered in _DROPPED_TAGS:
+        return ""
+    if lowered == "adult":
+        return "an adult"
+    match = _GENDER_TAG.match(lowered)
+    if not match:
+        return tag
+    count, kind = match.group(1), match.group(2).lower()
+    if not count or count == "1":
+        return f"a {kind}"
+    article = _NUMBER_WORDS.get(count, count)
+    return f"{article} {kind}"
+
 
 def clean_phrase(text: str) -> str:
     """Tidy a phrase the narrator wrote, and de-tag the ones stored earlier.
@@ -475,6 +572,152 @@ def _clause(text: str) -> str:
     return phrase if phrase.endswith((".", "!", "?")) else phrase + "."
 
 
+# ---------------------------------------------------------------------------
+# A stored look is a danbooru tag list, and a long one is a wall of text.
+#
+# A 63-tag look reached the picture as ~60 words after `clean_phrase` and ended
+# up as most of the prompt's body, and roughly half of those words described the
+# chest and the outfit. Qwen-Image reads that as one instruction repeated: the
+# result was a close, leaning crop in every scene, and the twenty-word sentence
+# about the actual place had no weight left against it. So a look is reduced to
+# the attributes that identify the character: hair, eyes, one garment, species.
+# ---------------------------------------------------------------------------
+
+# Garments. One per character survives, so a blouse named five ways (unbuttoned,
+# semi sheer, thin silk, chiffon...) is stated once.
+_GARMENT_WORDS = {
+    "blouse", "shirt", "dress", "skirt", "shorts", "trousers", "pants", "coat",
+    "jacket", "cloak", "robe", "armor", "armour", "apron", "stockings", "socks",
+    "boots", "shoes", "sash", "belt", "bra", "bikini", "uniform", "tunic",
+    "poncho", "cape", "hat", "hood", "veil", "gloves", "bodice", "chemise",
+    "blazer", "cardigan", "overalls", "leggings", "stocking", "underwear",
+}
+# Body shape. Several of these mean the same thing to the model ("huge breasts",
+# "ample breasts", "round breasts", "enlarged breasts"), so only the first counts.
+_BODY_RE = re.compile(
+    r"\b(breasts?|boobs?|tits?|cleavage|hips?|waist|legs?|thighs?|buttocks?|"
+    r"figure|proportions|build|physique|slender|slim|lean|curvy|petite|tall|"
+    r"muscular|athletic|voluptuous)\b"
+)
+# Face detail. A caption that names eyelashes, lips, chin and nose is a face
+# close-up request; the character's identity does not need them.
+_FACE_RE = re.compile(
+    r"\b(face|lashes?|lips?|chin|nose|blush|flush|makeup|gloss|gaze|eyeshadow|"
+    r"freckles?|freckle|skin|freckled)\b"
+)
+_SPECIES_WORDS = {
+    "elf", "elves", "human", "fairy", "fae", "demon", "angel", "vampire",
+    "werewolf", "wolf", "cat", "feline", "kitsune", "dragon", "beastkin",
+    "beastfolk", "goblin", "orc", "tiefling", "dhampir", "lizard", "serpent",
+}
+# Media words. The backend writes the art style itself, so a stored "anime" is
+# both redundant and a tag the model weighs like a content instruction.
+_MEDIA_WORDS = {"anime", "manga", "photorealistic", "realistic", "photo", "3d"}
+
+# How many tags of each attribute survive into the caption. The face has none:
+# see above.
+_LOOK_CAPACITY = {"hair": 2, "eyes": 1, "garment": 2, "body": 1, "species": 2}
+
+
+def _garment_noun(tag: str) -> str:
+    """The piece of clothing a tag names ("tight short shorts" -> "shorts")."""
+    return next(
+        (word for word in tag.split() if word in _GARMENT_WORDS),
+        tag,
+    )
+
+
+def _look_family(tag: str) -> str | None:
+    """Which attribute of a character a stored look tag describes."""
+    text = " ".join(tag.lower().replace("_", " ").split())
+    if not text:
+        return None
+    if _GENDER_TAG.match(text):
+        return "gender"
+    if "hair" in text or set(text.split()) & _HAIR_STYLE_TOKENS:
+        return "hair"
+    if "eyes" in text:
+        return "eyes"
+    if set(text.split()) & _GARMENT_WORDS:
+        return "garment"
+    if _BODY_RE.search(text):
+        return "body"
+    if _FACE_RE.search(text):
+        return "face"
+    if set(text.split()) & _SPECIES_WORDS:
+        return "species"
+    if set(text.split()) & _MEDIA_WORDS:
+        return "media"
+    return None
+
+
+# Above this many comma-separated items a stored look is a tag pile (not a short
+# English phrase), and only then is it trimmed. The current narrator writes 5-10
+# words, which pass through untouched.
+_LOOK_TRIM_THRESHOLD = 12
+
+
+def look_anchor(appearance_tags: str) -> str:
+    """A stored look as a short identity anchor instead of a tag wall.
+
+    Keeps the gender word — the one tag that must never be dropped, because a
+    woman drawn as a man is worse than any lost detail — then the first tag of
+    each surviving attribute up to that attribute's capacity, in the order the
+    narrator wrote them. Everything else (repeated synonyms, face micro-detail,
+    fabric names) is dropped.
+
+    A look short enough to be an ordinary English phrase is returned unchanged:
+    trimming exists to cut a sixty-tag danbooru pile down, never to rewrite a
+    sentence the narrator wrote this week.
+    """
+    items = [raw for raw in (appearance_tags or "").split(",") if raw.strip()]
+    if len(items) <= _LOOK_TRIM_THRESHOLD:
+        return clean_phrase(appearance_tags)
+    kept: list[str] = []
+    counts: dict[str, int] = {}
+    seen: set[str] = set()
+    worn: set[str] = set()
+    for tag in items:
+        tag = tag.strip().replace("_", " ").strip(" .;").lower()
+        if not tag or tag in QUALITY_TOKENS_SET or tag in seen:
+            continue
+        family = _look_family(tag)
+        if family in (None, "face", "media"):
+            continue
+        phrase = _plain_tag(tag)
+        if not phrase:
+            continue
+        seen.add(tag)
+        if family:
+            counts[family] = counts.get(family, 0) + 1
+            if counts[family] > _LOOK_CAPACITY.get(family, 1):
+                continue
+            # A garment named four ways ("unbuttoned blouse", "semi sheer
+            # blouse", "thin silk blouse", "chiffon blouse") is ONE piece of
+            # clothing, so the repeats go even though a second garment (a skirt
+            # under the blouse) is still allowed by the capacity.
+            if family == "garment":
+                noun = _garment_noun(tag)
+                if noun in worn:
+                    continue
+                worn.add(noun)
+        kept.append(phrase)
+    if not kept:
+        # Nothing recognisable survived (a pile of pure boilerplate): fall back
+        # to the untidied phrase rather than dropping the character entirely.
+        return clean_phrase(appearance_tags)
+    sentence = ", ".join(kept)
+    return sentence[0].upper() + sentence[1:]
+
+
+# There is deliberately NO fixed pose sentence here any more. A hardcoded
+# "stands upright, both feet planted, weight even…" appended to every scene
+# fixed the opposite problem: the character was drawn standing in exactly the
+# same place, in exactly the same pose, turn after turn, because the same
+# words were in every prompt. The pose belongs to the scene sentence the
+# narrator wrote for that turn — it is the only thing that varies.
+
+
 def assemble_scene_caption(
     scene: str,
     hero: str = "",
@@ -490,9 +733,20 @@ def assemble_scene_caption(
     model a flat tag list, and the model answered with flat-tag results: a
     photorealistic picture for an anime story, and two people in one frame drawn
     in two different styles (each tag block was read as its own description).
+
+    `hero` and `others` go through `look_anchor` first: a stored look can be
+    sixty tags long, and pasted in full it drowns the sentence that says where
+    the scene is and how the character stands in it.
     """
     parts = [_clause(style), _clause(scene)]
-    who = [part for part in (_clause(hero), *(_clause(text) for text in (others or []))) if part]
+    who = [
+        part
+        for part in (
+            _clause(look_anchor(hero)),
+            *(_clause(look_anchor(text)) for text in (others or [])),
+        )
+        if part
+    ]
     if who:
         parts.append("In the frame: " + " ".join(who))
     if world.strip():
@@ -514,8 +768,12 @@ def assemble_portrait_caption(
     long hair, cowboy shot, looking at viewer") is SDXL vocabulary, not
     Qwen-Image-2.1 vocabulary, and it is what made the portraits flat and the
     styles drift between characters.
+
+    The stored look goes through `look_anchor` for the same reason as in a
+    scene: a sixty-tag look pasted whole is a wall of chest-and-fabric words
+    that decides the crop before the pose is read.
     """
-    subject_parts = [clean_phrase(appearance or "")]
+    subject_parts = [look_anchor(appearance or "")]
     age = " ".join((age or "").split()).strip(" ,.;")
     if age:
         subject_parts.append(age[0].lower() + age[1:])
@@ -907,7 +1165,16 @@ def build_edit_workflow(
         node_id = str(EDIT_LOAD_NODE_BASE + index)
         workflow[node_id] = {"class_type": "LoadImage", "inputs": {"image": filename}}
         links.append([node_id, 0])
-    workflow["6"]["inputs"]["images"] = links
+    # The encoder takes its pictures as NAMED inputs (`images.image_1`,
+    # `images.image_2`, ...) on the current Qwen-Image-2.1 node, not as one list,
+    # so each slot is wired under its own name and the stale ones from the
+    # template are cleared — a leftover `images.image_2` pointing at the
+    # template's own LoadImage would feed the model a picture nobody uploaded.
+    encode_inputs = workflow["6"]["inputs"]
+    for key in [name for name in encode_inputs if name.startswith("images.image_")]:
+        del encode_inputs[key]
+    for index, link in enumerate(links, start=1):
+        encode_inputs[f"images.image_{index}"] = link
     workflow["6"]["inputs"]["prompt"] = positive_prompt
     # switch=true picks the empty latent of the workflow's own size; false keeps
     # the encoded target latent, so the picture starts from the target itself.
@@ -1118,18 +1385,20 @@ REFERENCE_SCALE_NODE = "91"
 REFERENCE_VAE_NODE = "92"
 
 
-def _inject_img2img_chain(workflow: dict[str, Any], reference_name: str, settings: Settings) -> None:
+def _inject_img2img_chain(
+    workflow: dict[str, Any], reference_name: str, settings: Settings, image_format: str
+) -> None:
     """Wire a reference portrait into the first sampler as an img2img latent.
 
     The workflow file itself stays txt2img (latent from EmptyLatentImage), so
     generations without a usable reference are completely unaffected; only when
     a reference is actually applied do we inject the chain and rewire. The
-    reference is center-cropped/scaled to the EmptyLatentImage resolution so
-    the latent size matches what the workflow was built for.
+    reference is center-cropped/scaled to the canvas the workflow will render at
+    — resolved from its `ResolutionSelector`, since the numbers now live there
+    rather than in EmptyLatentImage — so the latent size matches what the sampler
+    was built for.
     """
-    latent = workflow.get("7", {}).get("inputs", {})
-    width = int(latent.get("width", 1568))
-    height = int(latent.get("height", 880))
+    width, height = workflow_resolution(workflow, image_format)
     workflow[REFERENCE_LOAD_NODE] = {"class_type": "LoadImage", "inputs": {"image": reference_name}}
     workflow[REFERENCE_SCALE_NODE] = {
         "class_type": "ImageScale",
@@ -1154,6 +1423,7 @@ def apply_reference_images(
     uploaded_names: list[str],
     settings: Settings,
     as_latent: bool = True,
+    image_format: str = "wide",
 ) -> int:
     """Point the configured LoadImage nodes at the uploaded references.
 
@@ -1169,6 +1439,9 @@ def apply_reference_images(
     `as_latent=True` (the reference has the portrait's own frame shape); a scene
     wants it only when the story opted in via `IMAGE_SCENE_REFERENCE`, because
     the portrait's frame is not the scene's frame.
+
+    `image_format` is only used to resolve the canvas the workflow renders at
+    (and only if `ResolutionSelector` cannot be read) when scaling that reference.
     """
     applied = 0
     for node_id, name in zip(reference_node_ids(settings), uploaded_names):
@@ -1179,7 +1452,7 @@ def apply_reference_images(
         node.setdefault("inputs", {})["image"] = name
         applied += 1
     if uploaded_names and settings.image_reference_mode == "img2img" and as_latent:
-        _inject_img2img_chain(workflow, uploaded_names[0], settings)
+        _inject_img2img_chain(workflow, uploaded_names[0], settings, image_format)
         applied = max(applied, 1)
     if len(uploaded_names) > applied:
         logger.info("dropped %d reference image(s): not enough reference slots", len(uploaded_names) - applied)
@@ -1355,6 +1628,91 @@ def enqueue_resume_portrait(character_id: int) -> None:
     _job_queue.put(("resume_portrait", character_id))
 
 
+# ---------------------------------------------------------------------------
+# Seed choice.
+#
+# One seed for every picture pinned every story to a single noise pattern: the
+# prompts of successive turns differ only slightly, so the model kept answering
+# with the same composition — the same crop, the same lean, turn after turn. The
+# base seed now gets mixed with a counter that advances once per picture
+# actually drawn, which keeps two properties at once: two DIFFERENT turns get
+# different noise (no more repeated framing), and the SAME job re-run after a
+# crash or a retry reuses the seed already written in its log, so an adopted or
+# re-queued picture is still the picture that job was making.
+#
+# The counter is persisted in IMAGE_DIR/.seed_counter, so it survives a restart:
+# a fresh counter after every restart would hand the same seeds out twice.
+# ---------------------------------------------------------------------------
+_SEED_LOCK = threading.Lock()
+SEED_COUNTER_FILE = "seed_counter.txt"
+
+
+def _recorded_seed(build_log: str | None) -> int | None:
+    """The seed a previous run of this job used, read back from its log.
+
+    A job that was interrupted (or failed) and gets re-queued has to come out
+    as the picture it was already making, so it reuses the seed its log records.
+    A plain repaint has no such promise — the player asked for something else —
+    so its log is cleared first and this returns None.
+    """
+    if not build_log:
+        return None
+    match = re.search(r"^seed:\s*(\d+)\s*$", build_log, re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def scene_prompt(turn: Any) -> str:
+    """The scene text a picture is generated from.
+
+    A player's own wording wins over the narrator's when there is one: the
+    "edit the prompt" box on a repaint is there precisely to re-aim a picture
+    the narrator got wrong, and the narration, the choice and the story state
+    are deliberately left alone — this is a picture setting, not a turn edit.
+    An override that is blank or only whitespace falls back to the stored
+    prompt rather than generating from nothing.
+    """
+    override = (getattr(turn, "image_prompt_override", None) or "").strip()
+    return override or (turn.image_prompt or "")
+
+
+def _seed_counter_path(settings: Settings) -> Path:
+    return Path(settings.image_dir) / SEED_COUNTER_FILE
+
+
+def _read_seed_counter(settings: Settings) -> int:
+    try:
+        return int(_seed_counter_path(settings).read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def next_seed(settings: Settings) -> int:
+    """The seed for the next picture drawn under these settings.
+
+    In "fixed" mode this is the base seed, unchanged, forever. In
+    "per_picture" mode it is the base seed mixed with a counter that advances
+    once per call, so no two pictures share a seed.
+    """
+    base = int(settings.image_seed)
+    if (settings.image_seed_mode or "fixed") != "per_picture":
+        return base
+    with _SEED_LOCK:
+        counter = _read_seed_counter(settings) + 1
+        path = _seed_counter_path(settings)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(counter), encoding="utf-8")
+        except OSError as exc:
+            # A counter that cannot be persisted still works for this run; it
+            # only repeats seeds after a restart.
+            logger.warning("could not persist the seed counter: %s", exc)
+    # The sampler's seed input is an int64 in ComfyUI but travels as a JSON
+    # number, and ComfyUI's own randomize button stays inside 2**53; staying
+    # under 2**31 keeps the value exact everywhere.
+    span = 2**31 - 1
+    return (base + counter * 2_654_435_761) % span
+
+
 def start_worker() -> None:
     global _worker_thread, _worker_running
     with _worker_lock:
@@ -1522,6 +1880,29 @@ def format_build_log(
     return "\n".join(lines)
 
 
+def scene_photo_edit_prompt(caption: str, hero_name: str | None) -> str:
+    """Instruction text for a scene built around the player's own photo.
+
+    The photo is image_1, and Qwen-Image's edit graph copies far more than a
+    face from it: the framing, the crop and above all the BODY POSE. A player
+    photo is a waist-up snapshot — leaning in, filling the frame — so every
+    scene drawn as an edit of it came back waist-up and leaning, and the scene's
+    own "wide shot, standing in a field" lost to the picture. The photo is a
+    likeness, not a layout, and this says so explicitly: keep the face and the
+    hair, but stand the person up and frame the scene as described.
+    """
+    who = hero_name or "the main character"
+    return (
+        f"{caption} Draw this scene as its own picture, in the framing and the pose "
+        f"just described. <image1> is a photograph of {who} and it is a likeness "
+        f"reference ONLY: keep the face, the facial features, the hair and the skin "
+        f"tone exactly as they are in the photograph, but do NOT copy the photograph's "
+        f"cropping, its camera angle or its pose — {who} is standing upright in this "
+        f"scene, and the framing is the one described above, not the one in the "
+        f"photograph. Keep the same art style as the photograph."
+    )
+
+
 def assemble_portrait_edit_prompt(portrait_prompt: str, from_player_photo: bool) -> str:
     """Instruction text for a portrait that is an edit of an existing picture.
 
@@ -1596,13 +1977,16 @@ def ensure_build_logs(db: Any, turns: list[Turn], settings: Settings) -> None:
 
     The log is written when a picture is drawn, so pictures made before the
     feature existed have none — and a button that is empty for most of a story
-    looks broken. Because the seed is fixed (IMAGE_SEED) the prompt can be
-    assembled again from the stored scene prompt and the stored appearance tags,
-    which reproduces exactly what the current code would send. Such a log says
+    looks broken. The prompt can be assembled again from the stored scene prompt
+    and the stored looks, which is what today's code would send. Such a log says
     so, instead of pretending to be the historical record.
+
+    The seed line cannot be reconstructed (a per-picture seed is not derivable
+    from the turn), so a rebuilt log reports the base seed and is labelled a
+    rebuild — the same honesty as the mode line.
     """
     for turn in turns:
-        if turn.image_build_log or not (turn.image_prompt or "").strip():
+        if turn.image_build_log or not scene_prompt(turn).strip():
             continue
         if not settings.image_generation_enabled:
             continue
@@ -1610,12 +1994,13 @@ def ensure_build_logs(db: Any, turns: list[Turn], settings: Settings) -> None:
             hero_phrase, character_phrases = _scene_appearance_phrases(db, turn)
             style_pos, style_neg, explicit, world_tags = _story_image_params(db, turn.story_id)
             prompt = assemble_scene_caption(
-                turn.image_prompt, hero_phrase, character_phrases,
+                scene_prompt(turn), hero_phrase, character_phrases,
                 style=style_pos, world=world_tags,
             )
             turn.image_build_log = format_build_log(
                 "text to image (rebuilt from the stored scene prompt with today's "
-                "settings — this picture was drawn before logging existed)",
+                "settings — this picture was drawn before logging existed; the seed "
+                "below is the base seed, not the one this picture was drawn with)",
                 prompt,
                 settings.image_steps,
                 settings.image_seed,
@@ -1648,7 +2033,7 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
     db = SessionLocal()
     try:
         turn = _get_with_retry(db, Turn, turn_id)
-        if turn is None or not turn.image_prompt:
+        if turn is None or not scene_prompt(turn):
             return
         turn.image_status = "generating"
         turn.image_error = None
@@ -1684,6 +2069,13 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                 with _client(settings) as client:
                     build_mode = "text to image"
                     reference_names: list[str] = []
+                    # One seed per picture drawn (see `next_seed`), so successive
+                    # turns stop reusing a single noise pattern. A resume or a
+                    # retry of a job that already has a log reuses THAT job's
+                    # seed instead, so a re-queued picture is still the picture
+                    # the interrupted job was making.
+                    recorded = _recorded_seed(turn.image_build_log)
+                    seed = recorded if recorded is not None else next_seed(settings)
                     if hero_photo:
                         hero_name = None
                         if story_row:
@@ -1698,20 +2090,23 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                         ]
                         workflow = build_edit_workflow(
                             turn.image_format or "wide",
-                            assemble_scene_caption(
-                                turn.image_prompt,
-                                hero_phrase,
-                                [text for _f, _d, text in references],
-                                style=style_pos,
-                                world=world_tags,
+                            scene_photo_edit_prompt(
+                                assemble_scene_caption(
+                                    scene_prompt(turn),
+                                    hero_phrase,
+                                    [text for _f, _d, text in references],
+                                    style=style_pos,
+                                    world=world_tags,
+                                ),
+                                hero_name,
                             ),
                             filename_prefix=f"roleplaygen/story_{turn.story_id}/scene_{turn.id}",
                             target=upload_reference_image(client, hero_photo, "hero_photo.png"),
                             references=uploaded,
                             steps=settings.image_steps,
-                            # One seed for every picture (IMAGE_SEED): the same
-                            # prompt then reproduces the same picture.
-                            seed=settings.image_seed,
+                            # A fresh picture gets a fresh seed; a re-queued job
+                            # reuses the one its own log recorded (see above).
+                            seed=seed,
                             # A photo is portrait-shaped; the canvas stays the
                             # workflow's own 16:9, so the result is a scene and
                             # not a crop of the upload.
@@ -1727,7 +2122,7 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                         workflow = build_workflow(
                             turn.image_format or "wide",
                             assemble_scene_caption(
-                                turn.image_prompt,
+                                scene_prompt(turn),
                                 hero_phrase,
                                 character_phrases,
                                 style=style_pos,
@@ -1739,7 +2134,7 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                             filename_prefix=f"roleplaygen/story_{turn.story_id}/scene_{turn.id}",
                             negative_extra=negative_extra,
                             steps=settings.image_steps,
-                            seed=settings.image_seed,
+                            seed=seed,
                         )
                         references = _reference_images_for_turn(db, turn, settings)
                         if references:
@@ -1754,6 +2149,7 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                                 # forces its crop, its pose and its single person
                                 # onto the scene. Only an explicit opt-in does that.
                                 as_latent=settings.image_scene_reference,
+                                image_format=turn.image_format or "wide",
                             )
                             logger.info(
                                 "turn %s: %d reference image(s) applied, scene driven by %s",
@@ -1795,6 +2191,9 @@ def process_turn_image(turn_id: int, settings: Settings | None = None) -> None:
                 relative = save_image(data, settings, turn.story_id, turn.id)
             turn.image_status = "done"
             turn.image_path = relative
+            # A NEW picture on disk: bump the version so the URL changes and the
+            # browser cannot answer a repaint from its cache (same file path).
+            turn.image_version = int(turn.image_version or 0) + 1
             turn.image_prompt_id = None
         except ImageGenerationError as exc:
             turn.image_status = "failed"
@@ -2017,6 +2416,10 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                 with _client(settings) as client:
                     source = portrait_edit_source(db, character, settings)
                     build_mode = "text to image"
+                    # Same rule as a scene: a new picture gets a new seed, a
+                    # re-queued one reuses the seed its log already recorded.
+                    recorded = _recorded_seed(character.portrait_build_log)
+                    seed = recorded if recorded is not None else next_seed(settings)
                     if source is not None:
                         reference_bytes, source_label = source
                         # "Image from image": the new portrait is an EDIT of the
@@ -2038,7 +2441,7 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                             # letterboxed) portraits, so the workflow's own 2:3
                             # latent is used instead.
                             custom_size=True,
-                            seed=settings.image_seed,
+                            seed=seed,
                         )
                         build_mode = f"edit (image_1 = {source_label})"
                         logger.info(
@@ -2054,7 +2457,7 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                             filename_prefix,
                             negative_extra=negative_extra_for(style_neg, explicit=explicit),
                             steps=settings.image_steps,
-                            seed=settings.image_seed,
+                            seed=seed,
                         )
                     # The same record as for scenes, shown in the character card.
                     character.portrait_build_log = format_build_log(
@@ -2086,6 +2489,7 @@ def process_character_portrait(character_id: int, settings: Settings | None = No
                 )
             character.portrait_status = "done"
             character.portrait_path = relative
+            character.portrait_version = int(character.portrait_version or 0) + 1
             character.portrait_prompt_id = None
             if character.portrait_history:
                 history = [dict(entry) for entry in character.portrait_history]
@@ -2171,6 +2575,7 @@ def _adopt_turn_image(db: Any, client: httpx.Client, turn: Turn, settings: Setti
     )
     data = download_image(client, image_info)
     turn.image_path = save_image(data, settings, turn.story_id, turn.id)
+    turn.image_version = int(turn.image_version or 0) + 1
     turn.image_status = "done"
     turn.image_error = None
     turn.image_prompt_id = None
@@ -2224,6 +2629,7 @@ def resume_character_portrait(character_id: int, settings: Settings | None = Non
             )
             character.portrait_status = "done"
             character.portrait_path = relative
+            character.portrait_version = int(character.portrait_version or 0) + 1
             character.portrait_error = None
             character.portrait_prompt_id = None
             if character.portrait_history:

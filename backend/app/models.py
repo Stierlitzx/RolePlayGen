@@ -58,6 +58,13 @@ class Turn(Base):
     image_status: Mapped[str] = mapped_column(String(20), default="none", nullable=False)
     image_format: Mapped[str | None] = mapped_column(String(20), nullable=True)
     image_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A scene prompt the player typed by hand (the "edit the prompt" box on a
+    # repaint). It REPLACES the narrator's own `image_prompt` for picture
+    # generation only — the narration, the choice and the story state are
+    # untouched, so a picture can be re-aimed without rewriting the turn. NULL
+    # means "use whatever the narrator wrote"; a repaint with NULL in the box
+    # clears it.
+    image_prompt_override: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     image_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The ComfyUI job id of the picture being drawn. Persisted so a restart can
@@ -71,6 +78,12 @@ class Turn(Base):
     image_build_log: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Sampler progress of the running job, 0-100 (ComfyUI WebSocket), nullable.
     image_progress: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Bumped every time a NEW picture is written for this turn. A repaint
+    # overwrites the same file, so without a version the URL stays the same and
+    # the browser answers "304 Not Modified" from its cache — the repaint runs,
+    # finishes, and the old picture stays on screen. A counter is honest where a
+    # timestamp is not: two repaints in the same second are ordinary.
+    image_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     characters_in_scene: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
@@ -78,8 +91,13 @@ class Turn(Base):
 
     @property
     def image_url(self) -> str | None:
+        """Where the browser fetches the picture from.
+
+        The `?v=` version is what makes a repaint visible: the path is reused,
+        so without it the browser would serve the cached old picture.
+        """
         if self.image_status == "done" and self.image_path:
-            return f"/media/{self.image_path}"
+            return f"/media/{self.image_path}?v={self.image_version}"
         return None
 
 
@@ -115,6 +133,9 @@ class Character(Base):
     # It is what the picture generator edits (image_1) and, when the player
     # asked for it, what the portrait card shows.
     photo_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Bumped when a new portrait is written for this character (same reason as
+    # `Turn.image_version`: a re-paint overwrites the same file).
+    portrait_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     # NB: this class has a column named "relationship", which shadows the
@@ -123,10 +144,26 @@ class Character(Base):
 
     @property
     def portrait_url(self) -> str | None:
+        """Where the browser fetches the portrait from.
+
+        Versioned for the same reason as `Turn.image_url`: a new look is written
+        to a NEW file (`char_<id>_v<n>.png`), but re-painting the SAME version
+        overwrites that file, so without the marker the browser would keep
+        showing the card it already cached.
+        """
         if self.portrait_status == "done" and self.portrait_path:
-            return f"/media/{self.portrait_path}"
+            return f"/media/{self.portrait_path}?v={self.portrait_version}"
         return None
 
     @property
     def photo_url(self) -> str | None:
-        return f"/media/{self.photo_path}" if self.photo_path else None
+        """The player's own picture, versioned like the portrait.
+
+        Uploading a replacement overwrites the same `photo_<id>.png`, so a
+        re-uploaded photo would otherwise keep showing the old face in the
+        Characters tab until a hard refresh. A photo and the portrait that uses
+        it are the same bytes at the same moment, so they share the counter.
+        """
+        if not self.photo_path:
+            return None
+        return f"/media/{self.photo_path}?v={self.portrait_version}"

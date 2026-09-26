@@ -13,6 +13,23 @@ from app.services.image_service import (
 )
 
 
+def test_a_player_scene_prompt_overrides_the_narrators() -> None:
+    # The "change the picture" box re-aims ONE picture without rewriting the turn:
+    # the narration, the choice and the state are untouched. A blank override
+    # falls back to the narrator's own words rather than generating from nothing.
+    class FakeTurn:
+        image_prompt = "A woman standing in a field at dusk, medium shot"
+        image_prompt_override = "The same woman kneeling in the barley, close-up"
+
+    assert image_service.scene_prompt(FakeTurn()) == (
+        "The same woman kneeling in the barley, close-up"
+    )
+    FakeTurn.image_prompt_override = "   "
+    assert image_service.scene_prompt(FakeTurn()) == FakeTurn.image_prompt
+    FakeTurn.image_prompt_override = None
+    assert image_service.scene_prompt(FakeTurn()) == FakeTurn.image_prompt
+
+
 def _tags(prompt: str) -> list[str]:
     return [tag.strip() for tag in prompt.split(",") if tag.strip()]
 
@@ -143,7 +160,9 @@ def test_sampler_steps_are_configurable() -> None:
 
 def test_workflow_invalid_format_falls_back_to_wide() -> None:
     wf = build_workflow("panorama", "p", "x")
-    assert wf["7"]["inputs"]["width"] == 1568  # wide workflow dims
+    # The canvas comes from the workflow's ResolutionSelector (16:9 at 1.5 MP),
+    # not from numbers typed into EmptyLatentImage.
+    assert image_service.workflow_resolution(wf, "wide") == (1632, 920)
 
 
 def test_both_workflows_load_and_validate() -> None:
@@ -154,13 +173,17 @@ def test_both_workflows_load_and_validate() -> None:
 
 def test_edit_workflow_wires_the_target_and_the_references() -> None:
     # The Qwen edit template sees its pictures as <image1>, <image2>, ... through
-    # the TextEncodeQwenImage21 `images` input, so the graph has to carry a
-    # LoadImage per slot and link them in that exact order.
+    # the TextEncodeQwenImage21 `images.image_N` inputs (one named socket per
+    # picture on the current node, not a single list), so the graph has to carry
+    # a LoadImage per slot and link them in that exact order.
     wf = build_edit_workflow(
         "wide", "put him from <image2> into <image1>", "roleplaygen/story_1/scene_3",
         target="hero.png", references=["npc_1.png", "npc_2.png"], seed=11, steps=16,
     )
-    assert wf["6"]["inputs"]["images"] == [["100", 0], ["101", 0], ["102", 0]]
+    assert wf["6"]["inputs"]["images.image_1"] == ["100", 0]
+    assert wf["6"]["inputs"]["images.image_2"] == ["101", 0]
+    assert wf["6"]["inputs"]["images.image_3"] == ["102", 0]
+    assert "images" not in wf["6"]["inputs"]  # the old list socket is gone
     assert wf["100"]["inputs"]["image"] == "hero.png"
     assert wf["101"]["inputs"]["image"] == "npc_1.png"
     assert wf["102"]["inputs"]["image"] == "npc_2.png"
@@ -181,7 +204,8 @@ def test_edit_workflow_cap_is_ten_images() -> None:
         "portrait", "p", "prefix", target="hero.png",
         references=[f"ref_{index}.png" for index in range(20)],
     )
-    assert len(wf["6"]["inputs"]["images"]) == 10
+    wired = [key for key in wf["6"]["inputs"] if key.startswith("images.image_")]
+    assert len(wired) == 10
     assert wf["109"]["inputs"]["image"] == "ref_8.png"
 
 
@@ -189,7 +213,7 @@ def test_edit_workflow_without_a_target_starts_from_an_empty_canvas() -> None:
     # References alone (no picture to edit) must not leave the switch pointing at
     # an encoded image that does not exist.
     wf = build_edit_workflow("wide", "p", "prefix", target=None, references=["hero.png"])
-    assert wf["6"]["inputs"]["images"] == [["100", 0]]
+    assert wf["6"]["inputs"]["images.image_1"] == ["100", 0]
     assert wf["100"]["inputs"]["image"] == "hero.png"
     assert wf["9"]["inputs"]["switch"] is True
 
@@ -202,7 +226,7 @@ def test_edit_workflow_needs_at_least_one_image() -> None:
 def test_custom_size_overrides_the_target_canvas() -> None:
     wf = build_edit_workflow("wide", "p", "prefix", target="hero.png", custom_size=True)
     assert wf["9"]["inputs"]["switch"] is True
-    assert wf["7"]["inputs"]["width"] == 1568
+    assert wf["7"]["inputs"]["width"] == ["5", 0]  # fed by the ResolutionSelector
 
 
 def test_edit_prompt_addresses_the_pictures_by_number() -> None:
@@ -230,6 +254,117 @@ def test_portrait_edit_prompt_says_keep_the_face_and_change_the_look() -> None:
         "the face instruction has to come before the tag list"
     )
     assert "earlier picture" in assemble_portrait_edit_prompt("1girl, red cloak, adult", False)
+
+
+def test_a_long_stored_look_is_cut_down_to_an_identity_anchor() -> None:
+    # A 63-tag danbooru look reached the picture as ~60 words, half of them about
+    # the chest and the outfit, and the model obeyed the loudest part: every scene
+    # came back a close, leaning crop no matter what shot the caption asked for.
+    pile = ", ".join([
+        "1girl", "anime", "human", "elf", "fair_skin", "soft_flush", "delicate_face",
+        "large_eyes", "long_lashes", "full_lips", "elf_ears", "platinum_blonde_hair",
+        "long_hair", "silky_hair", "hip_length_hair", "ponytail", "wolfcut_hair",
+        "golden_brown_eyes", "dewy_eyes", "sultry_gaze", "light_makeup", "blush",
+        "perfect_proportions", "huge_breasts", "ample_breasts", "round_breasts",
+        "enlarged_breasts", "slender_waist", "wide_hips", "long_legs",
+        "unbuttoned_blouse", "semi_sheer_blouse", "thin_silk_blouse", "chiffon_blouse",
+        "braless", "tight_short_shorts", "hiked_high_short_shorts", "adult",
+        "huge breasts", "wide hips", "hourglass figure", "slim",
+    ])
+    anchor = image_service.look_anchor(pile)
+    # The gender and the species survive (a woman drawn as a man is the worst
+    # possible outcome), the hair and the eyes survive once, the blouse is stated
+    # once instead of four times, and the chest synonyms are gone entirely.
+    assert "girl" in anchor and "elf" in anchor
+    assert anchor.count("blouse") == 1
+    assert anchor.count("platinum blonde hair") == 1
+    assert anchor.count("breasts") == 0
+    assert anchor.count("hips") == 0
+    assert len(anchor.split()) < 20
+    # A short look is NOT touched: the current narrator writes a plain phrase.
+    assert image_service.look_anchor("1girl, red hair, blue cloak") == "Red hair, blue cloak"
+
+
+def test_a_scene_prompt_never_appends_a_fixed_pose() -> None:
+    # A hardcoded "stands upright, both feet planted, weight even, spine straight"
+    # was appended to every scene whose text mentioned standing. It fixed one
+    # leaning problem and created a worse one: the same words in every prompt
+    # meant the character was drawn standing in the same spot in the same stance,
+    # turn after turn. The pose belongs to the narrator's own sentence, which is
+    # the only part that changes from turn to turn.
+    first = image_service.assemble_scene_caption(
+        "A young woman standing in a field at dusk, wide shot", "a girl, red hair"
+    )
+    second = image_service.assemble_scene_caption(
+        "A young woman standing in a doorway at dusk, medium shot", "a girl, red hair"
+    )
+    for caption in (first, second):
+        assert "feet planted" not in caption
+        assert "weight even" not in caption
+        assert "spine straight" not in caption
+    # The narrator's own pose wording survives untouched in both.
+    assert "standing in a field" in first
+    assert "standing in a doorway" in second
+    # Two scenes therefore differ exactly where the story differs, and the
+    # caption adds no constant of its own.
+    assert first != second
+
+
+def test_a_scene_built_from_the_photo_forbids_copying_its_pose() -> None:
+    # The photo is image_1, and the edit graph copies its crop and pose as well as
+    # the face: a waist-up player photo made every scene waist-up and leaning.
+    prompt = image_service.scene_photo_edit_prompt("A woman standing in a field.", "Lira")
+    assert "<image1> is a photograph of Lira" in prompt
+    assert "likeness reference ONLY" in prompt
+    assert "do NOT copy" in prompt and "cropping" in prompt
+    # The scene description still leads: it is the picture being asked for.
+    assert prompt.index("standing in a field") < prompt.index("<image1>")
+
+
+def test_each_picture_gets_its_own_seed_but_a_requeue_reuses_its_own(tmp_path) -> None:
+    settings = image_service.Settings(
+        image_dir=str(tmp_path), image_seed=593103825222985, image_seed_mode="per_picture"
+    )
+    first = image_service.next_seed(settings)
+    second = image_service.next_seed(settings)
+    assert first != second, "two turns on one seed repeat the same composition"
+    # The counter is persisted, so a restart does not hand the same seeds out again.
+    assert (tmp_path / image_service.SEED_COUNTER_FILE).read_text() == "2"
+    assert image_service.next_seed(settings) != first
+    # "fixed" keeps the old promise: the same seed for every picture.
+    fixed = image_service.Settings(
+        image_dir=str(tmp_path), image_seed=593103825222985, image_seed_mode="fixed"
+    )
+    assert image_service.next_seed(fixed) == image_service.next_seed(fixed) == 593103825222985
+    # A re-queued job reads its own seed back out of its log, so an interrupted
+    # picture comes back as the picture it was making.
+    log = image_service.format_build_log("edit", "prompt", 25, first, ["hero_photo.png"])
+    assert image_service._recorded_seed(log) == first
+    assert image_service._recorded_seed(None) is None
+
+
+def test_a_repaint_clears_the_log_so_it_gets_a_new_seed(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.models import Story, Turn
+    from app.routers import images as images_router
+
+    story = Story(title="t", settings={}, max_turns=None)
+    db_session.add(story)
+    db_session.flush()
+    turn = Turn(
+        story_id=story.id, index=0, player_input_type="start", narration="n",
+        choice=None, state={}, is_ending=False, image_prompt="standing by river",
+        image_status="done", image_build_log="mode: text to image\nseed: 111\nprompt: x",
+    )
+    db_session.add(turn)
+    db_session.commit()
+
+    monkeypatch.setattr(image_service, "enqueue_turn_image", lambda _id: None)
+    images_router.redo_image(turn.id, db_session)
+    # The old log is gone, so `process_turn_image` cannot reuse seed 111 — a
+    # repaint that reused it would draw the identical picture.
+    assert db_session.get(Turn, turn.id).image_build_log is None
 
 
 def test_the_hero_photo_from_setup_also_drives_their_portrait(

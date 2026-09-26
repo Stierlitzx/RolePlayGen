@@ -93,7 +93,49 @@ def test_process_turn_image_mock_mode(db_session, tmp_path, monkeypatch) -> None
     assert turn.image_status == "done"
     assert turn.image_path == f"{story.id}/{turn.id}.png"
     assert (tmp_path / str(story.id) / f"{turn.id}.png").exists()
-    assert turn.image_url == f"/media/{story.id}/{turn.id}.png"
+    assert turn.image_url.startswith(f"/media/{story.id}/{turn.id}.png?v=")
+
+
+def test_a_repaint_changes_the_url_so_the_browser_cannot_serve_the_old_picture(
+    db_session, tmp_path, monkeypatch
+) -> None:
+    # The repaint overwrites `<story>/<turn>.png` — the same path — so the URL has
+    # to change with the file. Without the `?v=` version the browser revalidates,
+    # gets "304 Not Modified" and the player keeps looking at the picture they
+    # just rejected, which reads as "repaint does nothing".
+    from sqlalchemy.orm import sessionmaker
+
+    monkeypatch.setattr(image_service, "SessionLocal", sessionmaker(bind=db_session.get_bind()))
+    settings = image_service.Settings(
+        image_dir=str(tmp_path), mock_images=True, image_generation_enabled=True
+    )
+    story = Story(title="t", settings={}, max_turns=None)
+    db_session.add(story)
+    db_session.flush()
+    turn = Turn(
+        story_id=story.id, index=0, player_input_type="start", narration="n",
+        choice=None, state={}, is_ending=False, image_status="queued",
+        image_format="wide", image_prompt="1girl, forest",
+    )
+    db_session.add(turn)
+    db_session.commit()
+
+    process_turn_image(turn.id, settings)
+    db_session.refresh(turn)
+    first = turn.image_url
+    picture = tmp_path / str(story.id) / f"{turn.id}.png"
+    assert picture.exists()
+    assert first is not None
+
+    # A repaint: same row, same path, new bytes on disk.
+    process_turn_image(turn.id, settings)
+    db_session.refresh(turn)
+    second = turn.image_url
+
+    assert turn.image_path == f"{story.id}/{turn.id}.png"  # the path really is reused
+    assert second is not None
+    assert second != first, "a repainted picture must get a new URL"
+    assert second.startswith(f"/media/{story.id}/{turn.id}.png?v=")
 
 
 def test_process_turn_image_comfy_down_marks_failed(db_session, tmp_path, monkeypatch) -> None:

@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # The seed is FIXED for every picture (IMAGE_SEED) and matches the value the
     # bundled workflow files carry, so the same prompt reproduces the same image.
     image_seed: int = 593103825222985
+    # How the seed is chosen per picture. "fixed" = every picture uses
+    # IMAGE_SEED, so the same prompt reproduces the same image and a "repaint"
+    # button cannot show anything new. "per_picture" = the base seed is mixed
+    # with a counter that advances for every picture actually drawn, so
+    # successive turns stop landing on the same composition while a retry of the
+    # SAME job still reuses the seed recorded in its log.
+    image_seed_mode: str = "per_picture"
     # Reference-image feeding (optional, requires LoadImage nodes added to the
     # ComfyUI workflows by the user). "off" disables it entirely; "img2img"
     # also lowers the first sampler's denoise so the reference drives the look.

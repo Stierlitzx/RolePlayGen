@@ -71,9 +71,10 @@ def test_apply_reference_images_missing_node_is_skipped() -> None:
     assert workflow["90"] == {"class_type": "LoadImage", "inputs": {"image": "ref_1.png"}}
     assert workflow["91"]["class_type"] == "ImageScale"
     assert workflow["91"]["inputs"]["image"] == ["90", 0]
-    # the reference is scaled to the EmptyLatentImage (scene) resolution
-    assert workflow["91"]["inputs"]["width"] == workflow["7"]["inputs"]["width"]
-    assert workflow["91"]["inputs"]["height"] == workflow["7"]["inputs"]["height"]
+    # the reference is scaled to the canvas the workflow renders at, which the
+    # ResolutionSelector computes (the numbers no longer sit in EmptyLatentImage)
+    assert workflow["91"]["inputs"]["width"] == image_service.workflow_resolution(workflow, "wide")[0]
+    assert workflow["91"]["inputs"]["height"] == image_service.workflow_resolution(workflow, "wide")[1]
     assert workflow["92"] == {
         "class_type": "VAEEncode",
         "inputs": {"pixels": ["91", 0], "vae": ["3", 0]},
@@ -371,7 +372,7 @@ def test_portrait_regeneration_uses_previous_portrait_as_reference(
     assert uploaded == ["yes"]
     # The edit graph, not the injected img2img chain: the previous portrait is
     # image_1 and the sampler starts from its encoded latent.
-    assert submitted[0]["6"]["inputs"]["images"] == [["100", 0]]
+    assert submitted[0]["6"]["inputs"]["images.image_1"] == ["100", 0]
     assert submitted[0]["100"]["inputs"]["image"] == "ref_x.png"  # what ComfyUI stored it as
     assert submitted[0]["9"]["inputs"]["switch"] is True  # a portrait card is 2:3, not the photo's shape
     assert submitted[0]["8"]["inputs"]["latent_image"] == ["9", 0]

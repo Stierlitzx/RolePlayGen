@@ -326,8 +326,11 @@ def add_turn(db: Session, story_id: int, payload: TurnCreate, settings: Settings
             option["text"] for option in last_turn.choice["options"] if option["id"] == payload.option_id
         )
     else:
-        if not last_turn.choice["allow_custom"]:
-            raise InvalidPlayerInputError("Custom actions are not allowed for this choice.")
+        # A custom action is ALWAYS available. `allow_custom` used to gate this
+        # (and a "locked"/"binary" turn sent false), so the input row vanished
+        # and a turn like the player's could only be played by picking one of
+        # the narrator's options. The player is the one who has to live with the
+        # choice, so the freedom is not the narrator's to withdraw.
         custom_text = (payload.custom_text or "").strip()
         if not custom_text:
             raise InvalidPlayerInputError("Custom action cannot be empty.")
@@ -633,6 +636,31 @@ def _history_entry(
     }
 
 
+# The two aliases below expose the history mechanics `portrait_update` uses, so a
+# player-driven look change (`PATCH /characters/{id}/look`) follows exactly the
+# same rules as a narrator-driven one instead of re-implementing them in the
+# router. They are assigned AFTER both functions exist (see below).
+portrait_history_entry = _history_entry
+
+
+def replace_current_look(character: Character, new_tags: str) -> list[dict[str, Any]]:
+    """Rewrite the CURRENT look in place instead of appending a new version.
+
+    A player iterating on a portrait prompt repaints several times, and every
+    repaint appends a history entry — the "Past looks" gallery fills with
+    near-identical versions and the feed grows a "New look" row per tweak. This
+    keeps the number of versions and replaces the last one, which is what
+    `keep_history=false` asks for.
+    """
+    history = _init_history(character)
+    if not history:
+        return [_history_entry(new_tags, None, None, None, None)]
+    current = dict(history[-1])
+    current["appearance_tags"] = new_tags
+    history[-1] = current
+    return history
+
+
 def _init_history(character: Character) -> list[dict[str, Any]]:
     """Characters created before versioning get a one-entry history from their
     current data; already-versioned characters keep theirs."""
@@ -644,6 +672,10 @@ def _init_history(character: Character) -> list[dict[str, Any]]:
             character.portrait_path, character.first_seen_turn_id,
         )
     ]
+
+
+# Assigned here, not above: both source functions have to exist first.
+init_portrait_history = _init_history
 
 
 def _apply_portrait_update(

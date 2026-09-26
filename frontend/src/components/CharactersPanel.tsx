@@ -68,6 +68,13 @@ export default function CharactersPanel({ storyId, refreshKey = 0, onCharacterUp
   const [characters, setCharacters] = useState<CharacterInfo[] | null>(null);
   const [selected, setSelected] = useState<CharacterInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /* The look editor. The narrator decides a character's look, but a portrait the
+   * player dislikes is theirs to fix: free text in, a new stored look, one
+   * repaint queued. */
+  const [editingLook, setEditingLook] = useState(false);
+  const [lookDraft, setLookDraft] = useState('');
+  const [keepLookHistory, setKeepLookHistory] = useState(true);
+  const [lookBusy, setLookBusy] = useState(false);
   // True while the player's own picture is being uploaded.
   const [uploading, setUploading] = useState(false);
   // One place that shows the prompt behind EVERY character's last portrait, not
@@ -135,6 +142,32 @@ export default function CharactersPanel({ storyId, refreshKey = 0, onCharacterUp
     setCharacters((list) => list?.map((c) => (c.id === updated.id ? updated : c)) ?? null);
     setSelected(updated);
     onCharacterUpdated?.(updated);
+  };
+
+  const openLookEditor = (character: CharacterInfo) => {
+    setLookDraft(character.appearance_tags ?? '');
+    setKeepLookHistory(true);
+    setEditingLook(true);
+  };
+
+  const saveLook = (character: CharacterInfo) => {
+    const text = lookDraft.trim();
+    if (!text) {
+      setError('Describe the new look first.');
+      return;
+    }
+    setLookBusy(true);
+    setError(null);
+    void api
+      .updateCharacterLook(character.id, text, { keepHistory: keepLookHistory })
+      .then((updated) => {
+        applyUpdate(updated);
+        setEditingLook(false);
+      })
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : 'Could not change the look.'),
+      )
+      .finally(() => setLookBusy(false));
   };
 
   // The player's own picture of a character: it becomes the reference every
@@ -282,7 +315,62 @@ export default function CharactersPanel({ storyId, refreshKey = 0, onCharacterUp
                 >
                   Repaint this portrait
                 </button>
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => (editingLook ? setEditingLook(false) : openLookEditor(selected))}
+                >
+                  {editingLook ? 'Close the look editor ▾' : 'Change their look ▴'}
+                </button>
               </div>
+              {editingLook && (
+                <div className="character-look-editor">
+                  <label className="character-look-label" htmlFor={`look-${selected.id}`}>
+                    How they look
+                  </label>
+                  <textarea
+                    id={`look-${selected.id}`}
+                    className="character-look-textarea"
+                    rows={3}
+                    maxLength={1000}
+                    disabled={lookBusy}
+                    value={lookDraft}
+                    onChange={(event) => setLookDraft(event.target.value)}
+                    placeholder="A young woman with long ash-blonde hair, grey eyes, a burn along her left cheek, a worn leather coat."
+                  />
+                  <label className="character-look-check">
+                    <input
+                      type="checkbox"
+                      checked={keepLookHistory}
+                      disabled={lookBusy}
+                      onChange={(event) => setKeepLookHistory(event.target.checked)}
+                    />
+                    Keep the current look in &quot;Past looks&quot;
+                  </label>
+                  <div className="character-look-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={lookBusy || !lookDraft.trim()}
+                      onClick={() => saveLook(selected)}
+                    >
+                      {lookBusy ? 'Saving…' : 'Save and repaint'}
+                    </button>
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => setEditingLook(false)}
+                      disabled={lookBusy}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <p className="character-look-hint">
+                    In plain words, not tags. The new look is used in every later scene picture
+                    too.
+                  </p>
+                </div>
+              )}
               <label className="character-photo-upload">
                 {selected.photo_url ? 'Replace their picture' : 'Use your own picture'}
                 <input

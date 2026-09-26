@@ -132,6 +132,40 @@ describe('CharactersPanel', () => {
     readAsDataURL.mockRestore();
   });
 
+  it('lets the player rewrite a character look and repaint it', async () => {
+    // The narrator owns the look, but a portrait the player dislikes is theirs
+    // to fix: free text in, a PATCH, the card repaints from it.
+    const character = makeCharacter({ appearance_tags: 'brown hair, leather jacket' });
+    const changed = makeCharacter({
+      appearance_tags: 'shaved head, grey eyes, priest robes',
+      portrait_status: 'queued',
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(okResponse([character]))
+      .mockResolvedValueOnce(okResponse(changed));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<CharactersPanel storyId={1} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Kaelen/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Change their look/ }));
+    const box = await screen.findByLabelText('How they look');
+    // The editor opens on the look the narrator stored.
+    expect(box).toHaveValue('brown hair, leather jacket');
+    fireEvent.change(box, { target: { value: 'shaved head, grey eyes, priest robes' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and repaint' }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([, options]) =>
+        String((options as RequestInit).method ?? '') === 'PATCH',
+      );
+      expect(call).toBeTruthy();
+      const body = String((call?.[1] as RequestInit).body);
+      expect(body).toContain('shaved head, grey eyes, priest robes');
+      expect(body).toContain('keep_history');
+    });
+  });
+
   it('retries a failed portrait from the detail view', async () => {
     const failed = makeCharacter({
       id: 5,

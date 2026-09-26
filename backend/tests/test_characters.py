@@ -41,6 +41,76 @@ def _turn_contract_with(characters_json: str) -> str:
     )
 
 
+def test_player_rewrites_a_character_look(client: TestClient, db_session: Session) -> None:
+    # The narrator owns the look, but a portrait the player dislikes is theirs to
+    # fix: free text in, the look stored, one repaint queued, and the new look is
+    # what every later scene splices.
+    created = client.post("/api/stories", json=payload())
+    story_id = created.json()["id"]
+    character = Character(
+        story_id=story_id,
+        name="Kaelen",
+        appearance_tags="young man, brown hair, leather jacket",
+        portrait_status="done",
+        portrait_path=f"{story_id}/char_x.png",
+        portrait_history=[
+            {
+                "appearance_tags": "young man, brown hair, leather jacket",
+                "pose": "", "expression": "",
+                "portrait_path": f"{story_id}/char_x.png",
+                "turn_id": 1,
+            }
+        ],
+    )
+    db_session.add(character)
+    db_session.commit()
+    character_id = character.id
+
+    response = client.patch(
+        f"/api/characters/{character_id}/look",
+        json={"appearance_tags": "tall man, shaved head, grey eyes, priest's robes"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    # The new wording is stored AND shown back, so the editor opens on it.
+    assert body["appearance_tags"] == "tall man, shaved head, grey eyes, priest's robes"
+    # The old look stays available in "Past looks" and can be restored.
+    assert len(body["portrait_history"]) == 2
+    assert body["portrait_history"][0]["current"] is False
+    assert body["portrait_history"][1]["current"] is True
+    # Tests run with image generation off (conftest), so no job is queued here —
+    # what matters is that the look and the history were stored at all.
+    assert body["portrait_status"] == "done"
+
+
+def test_look_change_can_replace_the_current_version_instead(
+    client: TestClient, db_session: Session
+) -> None:
+    # A player iterating on a portrait prompt repaints several times; appending a
+    # version each time fills "Past looks" with near-identical cards.
+    created = client.post("/api/stories", json=payload())
+    story_id = created.json()["id"]
+    character = Character(
+        story_id=story_id, name="Una", appearance_tags="red hair, freckles",
+        portrait_history=[
+            {"appearance_tags": "red hair, freckles", "pose": "", "expression": "",
+             "portrait_path": None, "turn_id": 1}
+        ],
+    )
+    db_session.add(character)
+    db_session.commit()
+
+    response = client.patch(
+        f"/api/characters/{character.id}/look",
+        json={"appearance_tags": "blue hair, freckles", "keep_history": False},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["appearance_tags"] == "blue hair, freckles"
+    assert len(body["portrait_history"]) == 1, "the version count must not grow"
+
+
 def test_player_photo_upload(client: TestClient, db_session: Session) -> None:
     # The Characters tab lets the player hand the generator their own picture of
     # a character: it becomes the reference every picture is built from, and
@@ -66,12 +136,16 @@ def test_player_photo_upload(client: TestClient, db_session: Session) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["portrait_status"] == "done"
-    assert body["portrait_url"] == f"/media/{story_id}/photo_{companion.id}.png"
+    # The URL carries a `?v=` version (the file's mtime) so that re-painting the
+    # same portrait file cannot be answered from the browser's cache.
+    assert body["portrait_url"].startswith(f"/media/{story_id}/photo_{companion.id}.png?v=")
     assert body["photo_url"] == body["portrait_url"]
     # The generated look is APPENDED, not replaced: it stays in the gallery and
     # stays available for a revert.
     assert len(body["portrait_history"]) == 2
-    assert body["portrait_history"][0]["portrait_url"] == f"/media/{story_id}/char_{companion.id}.png"
+    assert body["portrait_history"][0]["portrait_url"].startswith(
+        f"/media/{story_id}/char_{companion.id}.png?v="
+    )
     assert body["portrait_history"][1]["portrait_url"] == body["portrait_url"]
 
     db_session.refresh(companion)
@@ -431,7 +505,7 @@ def test_character_detail_serves_portrait_history(client: TestClient, db_session
     detail = client.get(f"/api/characters/{character.id}").json()
     history = detail["portrait_history"]
     assert len(history) == 2
-    assert history[0]["portrait_url"] == f"/media/{story_id}/char_{character.id}.png"
+    assert history[0]["portrait_url"].startswith(f"/media/{story_id}/char_{character.id}.png?v=")
     assert history[0]["current"] is False
     assert history[0]["turn_id"] == 1
     assert history[1]["portrait_url"] is None

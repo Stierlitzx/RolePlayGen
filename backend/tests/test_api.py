@@ -70,8 +70,11 @@ def test_story_lifecycle_through_api(client: TestClient) -> None:
     assert second.status_code == 201
     assert second.json()["choice"]["mode"] == "locked"
 
-    rejected = client.post(f"/api/stories/{story['id']}/turns", json={"custom_text": "Fly away"})
-    assert rejected.status_code == 400
+    # A custom action is accepted on a locked turn too — the mode limits the
+    # options the narrator offers, never what the player may type.
+    own = client.post(f"/api/stories/{story['id']}/turns", json={"custom_text": "Fly away"})
+    assert own.status_code == 201
+    assert own.json()["player_input_type"] == "custom"
 
     turn_by_index: dict[int, dict] = {}
     current = second.json()

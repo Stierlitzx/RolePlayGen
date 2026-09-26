@@ -95,6 +95,56 @@ export default function ImageBlock({ turn }: Props) {
       .finally(() => setRepainting(false));
   };
 
+  /* The prompt editor. A picture can be wrong in a way another seed does not
+   * fix (the wrong person in the frame, a crop that cuts the point off, a
+   * character doing something the scene never said), and the narrator is not
+   * there to be asked — so the player gets the scene sentence itself, seeded
+   * from whatever produced the current picture, and can re-aim it. */
+  const [editingPrompt, setEditingPrompt] = useState(false);
+  const [draftPrompt, setDraftPrompt] = useState('');
+  const [promptBusy, setPromptBusy] = useState(false);
+  const openPromptEditor = () => {
+    setDraftPrompt(turn.image_prompt_override ?? turn.image_prompt ?? '');
+    setEditingPrompt(true);
+  };
+  const regenerateFromPrompt = () => {
+    setPromptBusy(true);
+    setStatus('queued');
+    setUrl(null);
+    setError(null);
+    api
+      .updateTurnImagePrompt(turn.id, draftPrompt)
+      .then((info) => {
+        setStatus(info.status);
+        if (info.status === 'failed') setError(info.error ?? 'Regeneration failed.');
+      })
+      .catch((err: unknown) => {
+        setStatus('failed');
+        setError(err instanceof Error ? err.message : 'Regeneration failed.');
+      })
+      .finally(() => {
+        setPromptBusy(false);
+        setEditingPrompt(false);
+      });
+  };
+  // Clearing the box drops the override, so the next picture is the narrator's
+  // own wording again — the way back when an edit made things worse.
+  const restoreNarratorPrompt = () => {
+    setDraftPrompt('');
+    setPromptBusy(true);
+    setStatus('queued');
+    setUrl(null);
+    setError(null);
+    api
+      .updateTurnImagePrompt(turn.id, '')
+      .then((info) => setStatus(info.status))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Could not restore.'))
+      .finally(() => {
+        setPromptBusy(false);
+        setEditingPrompt(false);
+      });
+  };
+
   if (status === 'failed') {
     return (
       <div className="image-block image-failed">
@@ -117,6 +167,16 @@ export default function ImageBlock({ turn }: Props) {
           >
             {repainting ? 'Repainting…' : 'Repaint this picture'}
           </button>
+          {turn.image_prompt && (
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => (editingPrompt ? setEditingPrompt(false) : openPromptEditor())}
+              disabled={promptBusy}
+            >
+              {editingPrompt ? 'Close the editor ▾' : 'Change the picture ▴'}
+            </button>
+          )}
           {turn.image_build_log && (
             <button
               type="button"
@@ -127,6 +187,47 @@ export default function ImageBlock({ turn }: Props) {
             </button>
           )}
         </div>
+        {editingPrompt && turn.image_prompt && (
+          <div className="image-prompt-editor">
+            <label className="image-prompt-label" htmlFor={`prompt-${turn.id}`}>
+              What should be in this picture
+            </label>
+            <textarea
+              id={`prompt-${turn.id}`}
+              className="image-prompt-textarea"
+              rows={4}
+              maxLength={2000}
+              disabled={promptBusy}
+              value={draftPrompt}
+              onChange={(event) => setDraftPrompt(event.target.value)}
+              placeholder="Describe the shot: who is in it, what they are doing, the place, the camera."
+            />
+            <div className="image-prompt-actions">
+              <button
+                type="button"
+                className="primary"
+                disabled={promptBusy || !draftPrompt.trim()}
+                onClick={regenerateFromPrompt}
+              >
+                {promptBusy ? 'Regenerating…' : 'Regenerate with this'}
+              </button>
+              {turn.image_prompt_override && (
+                <button
+                  type="button"
+                  className="link-button"
+                  disabled={promptBusy}
+                  onClick={restoreNarratorPrompt}
+                >
+                  Use the narrator&apos;s own words
+                </button>
+              )}
+            </div>
+            <p className="image-prompt-hint">
+              This only re-aims the picture. The story, the narration and your choice stay as they
+              are.
+            </p>
+          </div>
+        )}
         {showLog && turn.image_build_log && (
           <pre className="image-inline-log">{turn.image_build_log}</pre>
         )}

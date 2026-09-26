@@ -182,6 +182,10 @@ export default function StoryPage({
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not submit your choice.');
+        // Rethrow so the choice panel learns the turn did NOT land and keeps
+        // what the player wrote. Swallowing it here left the panel clearing
+        // itself after a failure, which is how a typed paragraph got lost.
+        throw err;
       } finally {
         setSubmitting(false);
       }
@@ -423,7 +427,12 @@ export default function StoryPage({
               <LoadingIndicator />
             ) : (
               lastTurn?.choice && (
-                <ChoicePanel choice={lastTurn.choice} disabled={submitting} onSubmit={submitChoice} />
+                <ChoicePanel
+                  choice={lastTurn.choice}
+                  disabled={submitting}
+                  onSubmit={submitChoice}
+                  draftKey={`roleplaygen.choiceDraft.${storyId}.${lastTurn.id}`}
+                />
               )
             ))}
         </>

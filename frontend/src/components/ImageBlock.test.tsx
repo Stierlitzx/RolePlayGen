@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ImageStatus, Turn } from '../api';
+import { api, type ImageStatus, type Turn } from '../api';
 import ImageBlock from './ImageBlock';
 
 function makeTurn(overrides: Partial<Turn>): Turn {
@@ -37,6 +37,63 @@ describe('ImageBlock', () => {
   it('renders nothing when the turn has no image', () => {
     const { container } = render(<ImageBlock turn={makeTurn({ image_status: 'none' })} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('lets the player re-aim a picture with their own prompt', async () => {
+    // Another seed cannot fix the wrong person in the frame or a crop that cuts
+    // the point off, and the narrator is not there to ask — so the scene sentence
+    // itself is editable, and the picture is regenerated from it.
+    const update = vi.fn().mockResolvedValue({ status: 'queued' });
+    vi.spyOn(api, 'updateTurnImagePrompt').mockImplementation(update);
+    render(
+      <ImageBlock
+        turn={makeTurn({
+          image_status: 'done',
+          image_url: '/media/1/1.png',
+          image_prompt: 'A woman standing in a field at dusk, medium shot',
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Change the picture/ }));
+    const box = screen.getByLabelText('What should be in this picture');
+    // The editor opens on the text that produced the current picture.
+    expect(box).toHaveValue('A woman standing in a field at dusk, medium shot');
+    fireEvent.change(box, { target: { value: 'The same woman kneeling in the barley' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate with this' }));
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(1, 'The same woman kneeling in the barley'),
+    );
+  });
+
+  it('offers the narrator wording back when an override is set', () => {
+    // The way out when an edit made the picture worse.
+    const update = vi.fn().mockResolvedValue({ status: 'queued' });
+    vi.spyOn(api, 'updateTurnImagePrompt').mockImplementation(update);
+    render(
+      <ImageBlock
+        turn={makeTurn({
+          image_status: 'done',
+          image_url: '/media/1/1.png',
+          image_prompt: 'A woman standing in a field',
+          image_prompt_override: 'Something else',
+        })}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Change the picture/ }));
+    // Opening the editor shows the override, not the narrator's text.
+    expect(screen.getByLabelText('What should be in this picture')).toHaveValue('Something else');
+    fireEvent.click(screen.getByRole('button', { name: /narrator's own words/ }));
+    // An empty prompt clears the override.
+    expect(update).toHaveBeenCalledWith(1, '');
+  });
+
+  it('has no prompt editor when the turn has no scene text', () => {
+    render(
+      <ImageBlock
+        turn={makeTurn({ image_status: 'done', image_url: '/media/1/1.png' })}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Change the picture/ })).not.toBeInTheDocument();
   });
 
   it.each<ImageStatus>(['queued', 'generating'])(

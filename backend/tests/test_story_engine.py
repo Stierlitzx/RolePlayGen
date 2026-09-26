@@ -57,11 +57,17 @@ def test_player_turns_cover_modes_and_completion(db_session: Session, settings: 
         story_engine.add_turn(db_session, story.id, TurnCreate(option_id="a"), settings)
 
 
-def test_custom_text_rejected_in_locked_mode(db_session: Session, settings: Settings) -> None:
+def test_custom_text_is_accepted_in_a_locked_mode(db_session: Session, settings: Settings) -> None:
+    # The player may always write their own action, whatever the mode. This used
+    # to raise "Custom actions are not allowed" on a locked turn, which is what
+    # made the input row disappear and left only the narrator's own options.
     story = story_engine.create_story(db_session, story_payload(), settings)
     story_engine.add_turn(db_session, story.id, TurnCreate(option_id="a"), settings)
-    with pytest.raises(story_engine.InvalidPlayerInputError, match="not allowed"):
-        story_engine.add_turn(db_session, story.id, TurnCreate(custom_text="Break the rules"), settings)
+    turn = story_engine.add_turn(
+        db_session, story.id, TurnCreate(custom_text="Break the rules"), settings
+    )
+    assert turn.player_input_type == "custom"
+    assert turn.player_input_text == "Break the rules"
 
 
 def test_invalid_model_response_retries_once_then_fails(

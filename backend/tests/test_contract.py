@@ -50,15 +50,27 @@ def test_ending_requires_null_choice() -> None:
     "choice",
     [
         {"mode": "open", "options": options(2), "allow_custom": True, "prompt": "Choose"},
-        {"mode": "open", "options": options(3), "allow_custom": False, "prompt": "Choose"},
         {"mode": "locked", "options": options(1), "allow_custom": False, "prompt": "Choose"},
-        {"mode": "locked", "options": options(3), "allow_custom": True, "prompt": "Choose"},
         {"mode": "binary", "options": options(3), "allow_custom": False, "prompt": "Choose"},
     ],
 )
 def test_invalid_choice_mode_rules(choice: dict) -> None:
     with pytest.raises(ValidationError):
         TurnContract.model_validate(contract(choice))
+
+
+@pytest.mark.parametrize("mode", ["open", "locked", "binary"])
+def test_the_player_can_always_write_their_own_action(mode: str) -> None:
+    # A locked/binary turn used to require `allow_custom=false`, which hid the
+    # input row in the UI and made the backend reject a custom action. The mode
+    # now only counts options, and whatever the narrator sends, the player keeps
+    # the field.
+    count = 2 if mode == "binary" else (3 if mode == "open" else 4)
+    value = TurnContract.model_validate(
+        contract({"mode": mode, "options": options(count), "allow_custom": False, "prompt": "Choose"})
+    )
+    assert value.choice is not None
+    assert value.choice.allow_custom is True
 
 
 def test_ending_with_choice_is_invalid() -> None:

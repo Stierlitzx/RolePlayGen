@@ -272,6 +272,14 @@ code { background: #00000055; padding: 0.1rem 0.35rem; border-radius: 5px; }
 .choice-binary { box-shadow: inset 0 1px 0 var(--accent); }
 .important-note { color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em; font-size: 0.7rem; margin: 0 0 0.3rem; }
 .choice-options { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.5rem 0; }
+/* Shown when a submit failed: the turn did not change, so the panel still shows
+   the same options and the one that was pressed is offered back in one click. */
+.choice-retry {
+  margin: 0.2rem 0 0.6rem;
+  font-size: 0.82rem;
+  color: #e0866a;
+}
+.choice-retry .link-button { font-size: 0.82rem; }
 .choice-options button {
   display: flex; gap: 0.7rem; align-items: center; text-align: left;
   background: var(--bg-elevated);
@@ -478,11 +486,77 @@ code { background: #00000055; padding: 0.1rem 0.35rem; border-radius: 5px; }
   color: #e0866a;
 }
 
+/* --- The two picture editors: the scene prompt on a turn, the look on a card --- */
+.image-prompt-editor,
+.character-look-editor {
+  margin-top: 0.5rem;
+  padding: 0.7rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+.image-prompt-label,
+.character-look-label {
+  font-size: 0.8rem;
+  color: var(--accent);
+}
+.image-prompt-textarea,
+.character-look-textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  padding: 0.5rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.image-prompt-actions,
+.character-look-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.character-look-check {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.image-prompt-hint,
+.character-look-hint {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
 /* --- Image log: what the picture model was actually told --- */
+/* The list itself scrolls, not just each entry: a long story produced one
+   entry per drawn turn, and the panel grew past the fold, so the entries at
+   the bottom were unreachable without scrolling the whole page. The height is
+   viewport-based so it stays usable on a laptop and on a big screen, and
+ * `overscroll-behavior` keeps a flick inside the list from then scrolling the
+   feed behind it. */
 .image-log-list {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+  max-height: min(60vh, 34rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.4rem;
+  /* A visible scrollbar is the point of this change, so it is never hidden. */
+  scrollbar-gutter: stable;
+}
+.image-log-list > .image-log-entry {
+  flex: 0 0 auto;
 }
 .image-log-entry summary,
 .character-image-log summary {
@@ -496,6 +570,7 @@ code { background: #00000055; padding: 0.1rem 0.35rem; border-radius: 5px; }
   padding: 0.6rem;
   max-height: 18rem;
   overflow: auto;
+  overscroll-behavior: contain;
   white-space: pre-wrap;
   word-break: break-word;
   background: var(--bg-elevated);
